@@ -7,7 +7,13 @@ I (shepard) mainly use it (shepr) to pit claude against codex. (I really just sp
 ## Install
 
 ```
-herdr plugin install shepardxia/shepr && printf '\n[[keys.command]]\nkey = "prefix+m"\ntype = "plugin_action"\ncommand = "shepr.open"\n' >> ~/.config/herdr/config.toml && herdr server reload-config
+herdr plugin install shepardxia/shepr
+```
+
+Then bind it to `prefix+m`:
+
+```
+printf '\n[[keys.command]]\nkey = "prefix+m"\ntype = "plugin_action"\ncommand = "shepr.open"\n' >> ~/.config/herdr/config.toml && herdr server reload-config
 ```
 
 ## Use
