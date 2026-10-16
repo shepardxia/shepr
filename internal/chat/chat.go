@@ -1,13 +1,10 @@
 // Package chat is the chat pane: it shows every message, takes the human's
-// from an input line and the agents' from herdr pane send-text, and delivers
+// from an input box and the agents' from herdr pane send-text, and delivers
 // each to every other agent in the tab.
 package chat
 
 import (
-	"github.com/shepardxia/shepr/internal/herdr"
-
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
@@ -17,10 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chzyer/readline"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/shepardxia/shepr/internal/herdr"
 )
 
-// human is the name the person at the input line posts under: the first name
+// human is the name the person at the input box posts under: the first name
 // on the account, else the login.
 var human = func() string {
 	if u, err := user.Current(); err == nil {
@@ -31,110 +32,94 @@ var human = func() string {
 	return os.Getenv("USER")
 }()
 
-// chat is one tab's chat pane.
+// message is one chat message. pane is its author's pane, empty for the human.
+type message struct{ author, pane, text string }
+
+// chat is the state the input box, the delivery loop and the roster poll share.
 type chat struct {
 	tab, self string
-	rl        *readline.Instance
-	out       io.Writer
+	queue     chan message // shown and delivered one at a time, in order
 
-	mu      sync.Mutex // guards members
+	mu      sync.Mutex
 	members []herdr.Agent
-
-	send sync.Mutex // one message at a time, so every agent sees the same order
 }
 
 // Run is the chat pane for the tab in HERDR_TAB_ID.
 func Run() error {
-	c := &chat{tab: os.Getenv("HERDR_TAB_ID"), self: os.Getenv("HERDR_PANE_ID")}
+	c := &chat{tab: os.Getenv("HERDR_TAB_ID"), self: os.Getenv("HERDR_PANE_ID"), queue: make(chan message, 64)}
 	if c.tab == "" || c.self == "" {
 		return errors.New("shepr chat runs as a herdr plugin pane")
 	}
-	fromAgents := make(chan [3]string, 16)
-	stdin := splitInput(os.Stdin, c.member, func(author, pane, text string) {
-		fromAgents <- [3]string{author, pane, text}
-	})
-	rl, err := readline.NewEx(&readline.Config{Stdin: stdin, Prompt: "› ", UniqueEditLine: true})
-	if err != nil {
-		return err
-	}
-	c.rl, c.out = rl, rl.Stdout()
-
-	go c.watch()
-	go func() {
-		for m := range fromAgents {
-			c.post(m[0], m[1], m[2])
-		}
-	}()
-
-	os.Stdout.WriteString("\x1b[?2004h")
-	for {
-		l, err := rl.Readline()
-		if err == readline.ErrInterrupt && l != "" {
-			continue
-		}
-		if err != nil {
-			break
-		}
-		if text := strings.TrimSpace(strings.ReplaceAll(l, pastedBreak, "\n")); text != "" {
-			c.post(human, "", text)
-		}
-	}
-	os.Stdout.WriteString("\x1b[?2004l")
-	// readline's Close blocks on its input loop, so leave raw mode and return.
-	return rl.Terminal.ExitRawMode()
+	in := terminal{splitInput(os.Stdin, c.member, func(author, pane, text string) {
+		c.queue <- message{author, pane, text}
+	}), os.Stdin}
+	p := tea.NewProgram(newModel(c), tea.WithInput(in))
+	go c.deliver(p)
+	go c.watch(p)
+	_, err := p.Run()
+	return err
 }
 
-// post shows a message and delivers it to every agent in the tab but the one
-// in pane, its author, as "author: text". The human's messages have no pane.
-func (c *chat) post(author, pane, text string) {
-	c.send.Lock()
-	defer c.send.Unlock()
-	fmt.Fprintf(c.out, "\n%s  %s\n%s\n", colorName(author), dim(time.Now().Format("15:04")), text)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var missed []string
-	for _, a := range c.roster() {
-		if a.PaneID == pane {
-			continue
-		}
-		wg.Add(1)
-		go func(a herdr.Agent) {
-			defer wg.Done()
-			if err := herdr.Prompt(a.PaneID, author+": "+text); err != nil {
-				reason := err.Error()
-				var he *herdr.Error
-				if errors.As(err, &he) {
-					reason = strings.TrimPrefix(he.Code, "agent_")
-				}
-				mu.Lock()
-				missed = append(missed, a.Handle()+" ("+reason+")")
-				mu.Unlock()
+// terminal is the pane's terminal as the program sees it: reads come through
+// splitInput, while Fd stays the terminal's, so the program sets raw mode and
+// renders for a raw terminal. It has no Name method, which keeps the program
+// reading through Read rather than polling the descriptor.
+type terminal struct {
+	io.Reader
+	tty *os.File
+}
+
+func (t terminal) Write(b []byte) (int, error) { return t.tty.Write(b) }
+func (t terminal) Close() error                { return nil }
+func (t terminal) Fd() uintptr                 { return t.tty.Fd() }
+
+// deliver shows each queued message and sends it to every agent in the tab but
+// its author, as "author: text".
+func (c *chat) deliver(p *tea.Program) {
+	for msg := range c.queue {
+		p.Send(printMsg("\n" + byline(msg.author) + "\n" + msg.text))
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var missed []string
+		for _, a := range c.roster() {
+			if a.PaneID == msg.pane {
+				continue
 			}
-		}(a)
-	}
-	wg.Wait()
-	if len(missed) > 0 {
-		sort.Strings(missed)
-		fmt.Fprintln(c.out, dim("  not delivered to "+strings.Join(missed, ", ")))
+			wg.Add(1)
+			go func(a herdr.Agent) {
+				defer wg.Done()
+				if err := herdr.Prompt(a.PaneID, msg.author+": "+msg.text); err != nil {
+					reason := err.Error()
+					var he *herdr.Error
+					if errors.As(err, &he) {
+						reason = strings.TrimPrefix(he.Code, "agent_")
+					}
+					mu.Lock()
+					missed = append(missed, a.Handle()+" ("+reason+")")
+					mu.Unlock()
+				}
+			}(a)
+		}
+		wg.Wait()
+		if len(missed) > 0 {
+			sort.Strings(missed)
+			p.Send(printMsg(faint.Render("  not delivered to " + strings.Join(missed, ", "))))
+		}
 	}
 }
 
 // watch keeps the roster current and welcomes each agent that joins. An
 // unnamed agent is always new: every welcomed agent holds a herdr name, and
 // herdr clears it when the agent exits.
-func (c *chat) watch() {
+func (c *chat) watch(p *tea.Program) {
 	welcomed := map[string]bool{}
 	for ; ; time.Sleep(2 * time.Second) {
 		all, err := herdr.Agents()
 		if err != nil {
 			continue
 		}
-		ms := c.inTab(all)
-		c.mu.Lock()
-		c.members = ms
-		c.mu.Unlock()
-		c.rl.SetPrompt(rosterLine(ms))
-		c.rl.Refresh()
+		ms := c.setMembers(all)
+		p.Send(rosterMsg{})
 		for _, a := range ms {
 			if a.Name == "" {
 				welcomed[a.PaneID] = false
@@ -147,7 +132,8 @@ func (c *chat) watch() {
 	}
 }
 
-func (c *chat) inTab(all []herdr.Agent) []herdr.Agent {
+// setMembers keeps the agents of this tab out of all and returns them.
+func (c *chat) setMembers(all []herdr.Agent) []herdr.Agent {
 	var ms []herdr.Agent
 	for _, a := range all {
 		if a.TabID == c.tab && a.PaneID != c.self {
@@ -155,6 +141,9 @@ func (c *chat) inTab(all []herdr.Agent) []herdr.Agent {
 		}
 	}
 	sort.Slice(ms, func(i, j int) bool { return ms[i].PaneID < ms[j].PaneID })
+	c.mu.Lock()
+	c.members = ms
+	c.mu.Unlock()
 	return ms
 }
 
@@ -164,9 +153,9 @@ func (c *chat) roster() []herdr.Agent {
 	return c.members
 }
 
-// member resolves name to the pane of an agent in this tab. On a miss it asks
-// herdr afresh and keeps the answer, so a message sent right after a rename is
-// taken and not delivered back to its author.
+// member resolves name to the pane of an agent in this tab, asking herdr
+// afresh on a miss so a message sent right after a rename is taken and not
+// delivered back to its author.
 func (c *chat) member(name string) (string, bool) {
 	find := func(ms []herdr.Agent) (string, bool) {
 		for _, a := range ms {
@@ -183,40 +172,90 @@ func (c *chat) member(name string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	ms := c.inTab(all)
-	c.mu.Lock()
-	c.members = ms
-	c.mu.Unlock()
-	return find(ms)
+	return find(c.setMembers(all))
 }
 
-var color = os.Getenv("NO_COLOR") == ""
+type (
+	printMsg  string   // a message to print above the input box
+	rosterMsg struct{} // the roster changed
+)
 
-func dim(s string) string {
-	if !color {
-		return s
-	}
-	return "\x1b[2m" + s + "\x1b[0m"
+type model struct {
+	c     *chat
+	input textarea.Model
 }
 
-// colorName shows the human in green and each agent in a bold color of its own.
-func colorName(name string) string {
-	if !color {
-		return name
+func newModel(c *chat) model {
+	in := textarea.New()
+	in.Prompt = "› "
+	in.ShowLineNumbers = false
+	in.DynamicHeight = true
+	in.MaxHeight = 8
+	in.MaxContentHeight = 10000
+	in.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
+	in.KeyMap.LineStart.SetKeys("home", "ctrl+a", "meta+left")
+	in.KeyMap.LineEnd.SetKeys("end", "ctrl+e", "meta+right")
+	styles := textarea.DefaultDarkStyles()
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	in.SetStyles(styles)
+	in.Focus()
+	return model{c: c, input: in}
+}
+
+func (m model) Init() tea.Cmd { return nil }
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case printMsg:
+		return m, tea.Println(string(msg))
+	case rosterMsg:
+		return m, nil
+	case tea.WindowSizeMsg:
+		m.input.SetWidth(msg.Width)
+	case tea.KeyPressMsg:
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "ctrl+d":
+			if m.input.Value() == "" {
+				return m, tea.Quit
+			}
+		case "enter":
+			if text := strings.TrimSpace(m.input.Value()); text != "" {
+				m.c.queue <- message{author: human, text: text}
+			}
+			m.input.Reset()
+			return m, nil
+		}
 	}
-	code := "32"
-	if name != human {
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m model) View() tea.View {
+	return tea.NewView(rosterLine(m.c.roster()) + "\n" + m.input.View())
+}
+
+var faint = lipgloss.NewStyle().Faint(true)
+
+// byline is a message's heading: the human in green, each agent in a bold
+// color of its own, then the time.
+func byline(author string) string {
+	color := "2"
+	if author != human {
 		h := fnv.New32a()
-		h.Write([]byte(name))
-		code = []string{"36", "35", "33", "34", "31"}[h.Sum32()%5]
+		h.Write([]byte(author))
+		color = []string{"6", "5", "3", "4", "1"}[h.Sum32()%5]
 	}
-	return "\x1b[1;" + code + "m" + name + "\x1b[0m"
+	name := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(author)
+	return name + "  " + faint.Render(time.Now().Format("15:04"))
 }
 
-// rosterLine is the input prompt: each agent with a dot for its state.
+// rosterLine lists the agents in the tab, each with a dot for its state.
 func rosterLine(ms []herdr.Agent) string {
 	if len(ms) == 0 {
-		return "no agents in this tab › "
+		return faint.Render("no agents in this tab")
 	}
 	parts := make([]string, len(ms))
 	for i, a := range ms {
@@ -231,5 +270,5 @@ func rosterLine(ms []herdr.Agent) string {
 		}
 		parts[i] = dot + " " + a.Handle()
 	}
-	return strings.Join(parts, "  ") + " › "
+	return strings.Join(parts, "  ")
 }

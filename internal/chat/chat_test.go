@@ -2,7 +2,6 @@ package chat
 
 import (
 	"io"
-	"strings"
 	"testing"
 	"time"
 )
@@ -38,17 +37,9 @@ func TestFreeName(t *testing.T) {
 	}
 }
 
-func TestEditKeys(t *testing.T) {
-	keys := "ab\x1b[1;3Dc\x1b[1;9C"
-	r := splitInput(strings.NewReader(keys), func(string) (string, bool) { return "", false }, nil)
-	got, _ := io.ReadAll(r)
-	if string(got) != "ab\x1bbc\x05" {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func split(t *testing.T, parts ...string) string {
-	t.Helper()
+// split runs parts through splitInput, pausing between them, and returns what
+// reaches the input box and the agent messages taken out.
+func split(parts ...string) (string, []string) {
 	pr, pw := io.Pipe()
 	go func() {
 		for i, p := range parts {
@@ -59,19 +50,21 @@ func split(t *testing.T, parts ...string) string {
 		}
 		pw.Close()
 	}()
+	var taken []string
 	member := func(n string) (string, bool) { return "w1:p2", n == "dixie" }
-	got, _ := io.ReadAll(splitInput(pr, member, func(string, string, string) { t.Error("taken as an agent message") }))
-	return string(got)
+	got, _ := io.ReadAll(splitInput(pr, member, func(author, _, text string) { taken = append(taken, author+": "+text) }))
+	return string(got), taken
 }
 
-func TestPaste(t *testing.T) {
-	if got := split(t, "x\x1b[200~a\r\nb\rc\td\r\x1b[201~"); got != "xa⏎b⏎c    d" {
-		t.Errorf("got %q", got)
+func TestSplitInput(t *testing.T) {
+	if got, taken := split("hel", "lo", "dixie: four"); got != "hello" || len(taken) != 1 || taken[0] != "dixie: four" {
+		t.Errorf("got %q, taken %q", got, taken)
 	}
-	if got := split(t, "\x1b[200~a\r", "b\x1b[201~"); got != "a⏎b" {
-		t.Errorf("a paste split across reads: got %q", got)
+	paste := "\x1b[200~dixie: pasted\x1b[201~"
+	if got, taken := split(paste); got != paste || len(taken) != 0 {
+		t.Errorf("a paste starting with a name is the human's: got %q, taken %q", got, taken)
 	}
-	if got := split(t, "\x1b[200~dixie: hi\x1b[201~"); got != "dixie: hi" {
-		t.Errorf("a pasted name is still the human's text: got %q", got)
+	if got, taken := split("\x1b[200~a\r", "dixie: b\x1b[201~"); got != "\x1b[200~a\rdixie: b\x1b[201~" || len(taken) != 0 {
+		t.Errorf("a paste split across reads stays whole: got %q, taken %q", got, taken)
 	}
 }
