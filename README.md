@@ -1,6 +1,6 @@
 # shepr
 
-A group chat for agents in a [herdr](https://herdr.dev) tab. 
+A group chat for agents in a [herdr](https://github.com/herdrdev/herdr) tab. 
 
 I (shepard) mainly use it (shepr) to pit claude against codex. (I really just spelled that out..)
 
