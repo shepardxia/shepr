@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -73,39 +75,132 @@ func (t terminal) Write(b []byte) (int, error) { return t.tty.Write(b) }
 func (t terminal) Close() error                { return nil }
 func (t terminal) Fd() uintptr                 { return t.tty.Fd() }
 
-// deliver shows each queued message and sends it to every agent in the tab but
-// its author, as "author: text".
+// held is a message that @mentions agents. It went to them first; the rest of
+// the tab gets it together with their replies.
+type held struct {
+	parts   []message
+	first   map[string]bool // panes the opening message already reached
+	waiting map[string]bool // mentioned panes yet to reply in the chat
+}
+
+// deliver shows each queued message and sends it on as "author: text". A
+// message that @mentions agents goes to them alone and is held for the rest
+// until they all reply, or until anything else is said.
 func (c *chat) deliver(p *tea.Program) {
+	var h *held
 	for msg := range c.queue {
 		p.Send(printMsg("\n" + byline(msg.author) + "\n" + msg.text))
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var missed []string
-		for _, a := range c.roster() {
-			if a.PaneID == msg.pane {
-				continue
+		if h != nil && h.waiting[msg.pane] {
+			h.parts = append(h.parts, msg)
+			delete(h.waiting, msg.pane)
+			if len(h.waiting) == 0 {
+				c.release(p, h)
+				h = nil
 			}
-			wg.Add(1)
-			go func(a herdr.Agent) {
-				defer wg.Done()
-				if err := herdr.Prompt(a.PaneID, msg.author+": "+msg.text); err != nil {
-					reason := err.Error()
-					var he *herdr.Error
-					if errors.As(err, &he) {
-						reason = strings.TrimPrefix(he.Code, "agent_")
-					}
-					mu.Lock()
-					missed = append(missed, a.Handle()+" ("+reason+")")
-					mu.Unlock()
-				}
-			}(a)
+			continue
 		}
-		wg.Wait()
-		if len(missed) > 0 {
-			sort.Strings(missed)
-			p.Send(printMsg(faint.Render("  not delivered to " + strings.Join(missed, ", "))))
+		if h != nil {
+			c.release(p, h)
+			h = nil
+		}
+		mentioned := c.mentioned(msg)
+		if len(mentioned) == 0 {
+			c.send(p, c.roster(), func(a herdr.Agent) string { return unseen(a, []message{msg}, nil) })
+			continue
+		}
+		first := map[string]bool{}
+		for _, a := range mentioned {
+			first[a.PaneID] = true
+		}
+		reached := c.send(p, mentioned, func(herdr.Agent) string { return msg.author + ": " + msg.text })
+		h = &held{parts: []message{msg}, first: first, waiting: reached}
+		if len(reached) == 0 {
+			c.release(p, h)
+			h = nil
+			continue
+		}
+		var names []string
+		for _, a := range mentioned {
+			if reached[a.PaneID] {
+				names = append(names, a.Handle())
+			}
+		}
+		p.Send(printMsg(faint.Render("  the rest wait for " + strings.Join(names, ", "))))
+	}
+}
+
+// release sends a held message and its replies to every agent, each getting
+// the parts it has not seen.
+func (c *chat) release(p *tea.Program, h *held) {
+	c.send(p, c.roster(), func(a herdr.Agent) string { return unseen(a, h.parts, h.first) })
+}
+
+// unseen is what agent a has not yet seen of parts: none of its own, and not
+// the opening part if it was among first.
+func unseen(a herdr.Agent, parts []message, first map[string]bool) string {
+	var out []string
+	for i, m := range parts {
+		if m.pane == a.PaneID || (i == 0 && first[a.PaneID]) {
+			continue
+		}
+		out = append(out, m.author+": "+m.text)
+	}
+	return strings.Join(out, "\n\n")
+}
+
+var mentionRe = regexp.MustCompile(`(?:^|\s)@([a-z][a-z0-9_-]{0,31})`)
+
+// mentioned is the agents in the tab that msg @mentions, other than its author.
+func (c *chat) mentioned(msg message) []herdr.Agent {
+	names := map[string]bool{}
+	for _, m := range mentionRe.FindAllStringSubmatch(msg.text, -1) {
+		names[m[1]] = true
+	}
+	var out []herdr.Agent
+	for _, a := range c.roster() {
+		if names[a.Handle()] && a.PaneID != msg.pane {
+			out = append(out, a)
 		}
 	}
+	return out
+}
+
+// send prompts each agent in to with text(agent), skipping empty texts, and
+// returns the panes it reached. Agents it could not reach are noted in the chat.
+func (c *chat) send(p *tea.Program, to []herdr.Agent, text func(herdr.Agent) string) map[string]bool {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	reached := map[string]bool{}
+	var missed []string
+	for _, a := range to {
+		t := text(a)
+		if t == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(a herdr.Agent) {
+			defer wg.Done()
+			err := herdr.Prompt(a.PaneID, t)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				reached[a.PaneID] = true
+				return
+			}
+			reason := err.Error()
+			var he *herdr.Error
+			if errors.As(err, &he) {
+				reason = strings.TrimPrefix(he.Code, "agent_")
+			}
+			missed = append(missed, a.Handle()+" ("+reason+")")
+		}(a)
+	}
+	wg.Wait()
+	if len(missed) > 0 {
+		sort.Strings(missed)
+		p.Send(printMsg(faint.Render("  not delivered to " + strings.Join(missed, ", "))))
+	}
+	return reached
 }
 
 // watch keeps the roster current and welcomes each agent that joins. An
@@ -226,6 +321,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.input.Reset()
 			return m, nil
+		case "tab":
+			if typed, ok := typedMention(m.input); ok {
+				if names := m.matches(typed); len(names) > 0 {
+					m.input.InsertString(names[0][len(typed):] + " ")
+				}
+				return m, nil
+			}
 		}
 	}
 	var cmd tea.Cmd
@@ -234,7 +336,53 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
-	return tea.NewView(rosterLine(m.c.roster()) + "\n" + m.input.View())
+	top := rosterLine(m.c.roster())
+	if typed, ok := typedMention(m.input); ok {
+		top = suggestLine(m.matches(typed))
+	}
+	return tea.NewView(top + "\n" + m.input.View())
+}
+
+// typedMention is the @name being typed at the cursor, without the @.
+func typedMention(in textarea.Model) (string, bool) {
+	line := []rune(strings.Split(in.Value(), "\n")[in.Line()])
+	col := min(in.Column(), len(line))
+	if col < len(line) && !unicode.IsSpace(line[col]) {
+		return "", false
+	}
+	start := col
+	for start > 0 && !unicode.IsSpace(line[start-1]) {
+		start--
+	}
+	word := string(line[start:col])
+	if !strings.HasPrefix(word, "@") {
+		return "", false
+	}
+	return word[1:], true
+}
+
+// matches is the agents in the tab whose names start with prefix.
+func (m model) matches(prefix string) []string {
+	var names []string
+	for _, a := range m.c.roster() {
+		if strings.HasPrefix(a.Handle(), prefix) {
+			names = append(names, a.Handle())
+		}
+	}
+	return names
+}
+
+// suggestLine shows the names an @ could complete to, the one Tab picks first.
+func suggestLine(names []string) string {
+	if len(names) == 0 {
+		return faint.Render("no agent by that name")
+	}
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = faint.Render("@" + n)
+	}
+	parts[0] = lipgloss.NewStyle().Bold(true).Render("@"+names[0]) + faint.Render(" tab")
+	return strings.Join(parts, "  ")
 }
 
 var faint = lipgloss.NewStyle().Faint(true)

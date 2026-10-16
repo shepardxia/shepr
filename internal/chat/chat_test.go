@@ -4,6 +4,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"github.com/shepardxia/shepr/internal/herdr"
 )
 
 func TestSent(t *testing.T) {
@@ -66,5 +68,28 @@ func TestSplitInput(t *testing.T) {
 	}
 	if got, taken := split("\x1b[200~a\r", "dixie: b\x1b[201~"); got != "\x1b[200~a\rdixie: b\x1b[201~" || len(taken) != 0 {
 		t.Errorf("a paste split across reads stays whole: got %q, taken %q", got, taken)
+	}
+}
+
+func TestUnseen(t *testing.T) {
+	rook, pauley := herdr.Agent{PaneID: "w1:p2"}, herdr.Agent{PaneID: "w1:p3"}
+	parts := []message{{"Shepard", "", "@rook why?"}, {"rook", "w1:p2", "because"}}
+	first := map[string]bool{"w1:p2": true}
+	if got := unseen(rook, parts, first); got != "" {
+		t.Errorf("rook saw both already, got %q", got)
+	}
+	if got := unseen(pauley, parts, first); got != "Shepard: @rook why?\n\nrook: because" {
+		t.Errorf("pauley gets the question and the reply, got %q", got)
+	}
+}
+
+func TestMentioned(t *testing.T) {
+	c := &chat{members: []herdr.Agent{{Name: "rook", PaneID: "w1:p2"}, {Name: "pauley", PaneID: "w1:p3"}}}
+	got := c.mentioned(message{"Shepard", "", "@rook and mail me at a@pauley.dev"})
+	if len(got) != 1 || got[0].Name != "rook" {
+		t.Errorf("only the @ at a word start counts, got %+v", got)
+	}
+	if got := c.mentioned(message{"rook", "w1:p2", "@rook talking to myself"}); len(got) != 0 {
+		t.Errorf("an author does not mention itself, got %+v", got)
 	}
 }
