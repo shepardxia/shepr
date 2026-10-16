@@ -66,48 +66,22 @@ func Run() error {
 		}
 	}()
 
-	lines := make(chan string)
-	go func() {
-		defer close(lines)
-		for {
-			l, err := rl.Readline()
-			if err == readline.ErrInterrupt && l != "" {
-				continue
-			}
-			if err != nil {
-				return
-			}
-			lines <- l
+	os.Stdout.WriteString("\x1b[?2004h")
+	for {
+		l, err := rl.Readline()
+		if err == readline.ErrInterrupt && l != "" {
+			continue
 		}
-	}()
-	for text, ok := pasted(lines); ok; text, ok = pasted(lines) {
-		if text = strings.TrimSpace(text); text != "" {
+		if err != nil {
+			break
+		}
+		if text := strings.TrimSpace(strings.ReplaceAll(l, pastedBreak, "\n")); text != "" {
 			c.post(human, "", text)
 		}
 	}
+	os.Stdout.WriteString("\x1b[?2004l")
 	// readline's Close blocks on its input loop, so leave raw mode and return.
 	return rl.Terminal.ExitRawMode()
-}
-
-// pasted reads one message: a line plus any lines that follow within a beat,
-// which is how a multi-line paste arrives.
-func pasted(lines <-chan string) (string, bool) {
-	first, ok := <-lines
-	if !ok {
-		return "", false
-	}
-	msg := []string{first}
-	for {
-		select {
-		case l, ok := <-lines:
-			if !ok {
-				return strings.Join(msg, "\n"), true
-			}
-			msg = append(msg, l)
-		case <-time.After(40 * time.Millisecond):
-			return strings.Join(msg, "\n"), true
-		}
-	}
 }
 
 // post shows a message and delivers it to every agent in the tab but the one

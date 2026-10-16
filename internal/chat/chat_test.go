@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSent(t *testing.T) {
@@ -43,5 +44,34 @@ func TestEditKeys(t *testing.T) {
 	got, _ := io.ReadAll(r)
 	if string(got) != "ab\x1bbc\x05" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func split(t *testing.T, parts ...string) string {
+	t.Helper()
+	pr, pw := io.Pipe()
+	go func() {
+		for i, p := range parts {
+			if i > 0 {
+				time.Sleep(3 * burstGap)
+			}
+			pw.Write([]byte(p))
+		}
+		pw.Close()
+	}()
+	member := func(n string) (string, bool) { return "w1:p2", n == "dixie" }
+	got, _ := io.ReadAll(splitInput(pr, member, func(string, string, string) { t.Error("taken as an agent message") }))
+	return string(got)
+}
+
+func TestPaste(t *testing.T) {
+	if got := split(t, "x\x1b[200~a\r\nb\rc\td\r\x1b[201~"); got != "xa⏎b⏎c    d" {
+		t.Errorf("got %q", got)
+	}
+	if got := split(t, "\x1b[200~a\r", "b\x1b[201~"); got != "a⏎b" {
+		t.Errorf("a paste split across reads: got %q", got)
+	}
+	if got := split(t, "\x1b[200~dixie: hi\x1b[201~"); got != "dixie: hi" {
+		t.Errorf("a pasted name is still the human's text: got %q", got)
 	}
 }

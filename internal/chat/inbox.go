@@ -16,6 +16,42 @@ var editKeys = strings.NewReplacer(
 	"\x1b[1;9D", "\x01", "\x1b[1;9C", "\x05",
 )
 
+// The chat turns on bracketed paste, so a paste arrives between these markers.
+const pasteStart, pasteEnd = "\x1b[200~", "\x1b[201~"
+
+// pastedBreak stands in for a line break in pasted text, since the input line
+// ends at a real one; the chat turns it back into a line break on send.
+const pastedBreak = "⏎"
+
+// pastedText flattens pasted text for the input line, which drops tabs.
+var pastedText = strings.NewReplacer("\r\n", pastedBreak, "\r", pastedBreak, "\n", pastedBreak, "\t", "    ")
+
+// unpaste replaces each bracketed paste in s with its text on one line.
+func unpaste(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.Index(s, pasteStart)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		s = s[i+len(pasteStart):]
+		end := strings.Index(s, pasteEnd)
+		if end < 0 {
+			end = len(s)
+		}
+		b.WriteString(pastedText.Replace(strings.TrimRight(s[:end], "\r\n")))
+		s = s[min(end+len(pasteEnd), len(s)):]
+	}
+}
+
+// pasteOpen reports whether s ends inside a paste.
+func pasteOpen(s string) bool {
+	i := strings.LastIndex(s, pasteStart)
+	return i >= 0 && !strings.Contains(s[i:], pasteEnd)
+}
+
 // burstGap is how long input may pause and still count as one burst. herdr
 // pane send-text writes a whole message at once; typing is far slower.
 const burstGap = 25 * time.Millisecond
@@ -37,8 +73,8 @@ func sent(burst string, member func(string) (string, bool)) (author, pane, text 
 }
 
 // splitInput reads the terminal, hands agent messages to fromAgent, and passes
-// everything else, keystrokes and the human's own pastes, to the returned
-// reader for the input line.
+// everything else, keystrokes and the human's own pastes flattened to one
+// line, to the returned reader for the input line.
 func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func(author, pane, text string)) io.ReadCloser {
 	chunks := make(chan []byte)
 	go func() {
@@ -70,11 +106,21 @@ func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func
 					more = false
 				}
 			}
-			if author, pane, text, ok := sent(string(burst), member); ok {
-				fromAgent(author, pane, text)
-				continue
+			for pasteOpen(string(burst)) {
+				next, ok := <-chunks
+				if !ok {
+					break
+				}
+				burst = append(burst, next...)
 			}
-			if _, err := pw.Write([]byte(editKeys.Replace(string(burst)))); err != nil {
+			in := string(burst)
+			if !strings.Contains(in, pasteStart) {
+				if author, pane, text, ok := sent(in, member); ok {
+					fromAgent(author, pane, text)
+					continue
+				}
+			}
+			if _, err := pw.Write([]byte(editKeys.Replace(unpaste(in)))); err != nil {
 				return
 			}
 		}
