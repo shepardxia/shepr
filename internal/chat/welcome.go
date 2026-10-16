@@ -26,7 +26,7 @@ House rule: keep it short and to the point, like texting a colleague. No preambl
 func welcomeFor(name string, named bool, chatPane string) string {
 	line, poster := "You go by "+name+" here.", name
 	if !named {
-		line = "Pick a name for yourself first, one lowercase word: herdr agent rename " + name + " <name>"
+		line = "Pick a name for yourself first, something creative and random, one lowercase word: herdr agent rename " + name + " <name>"
 		poster = "<name>"
 	}
 	return fmt.Sprintf(welcomeText, human, chatPane, line, chatPane, poster)

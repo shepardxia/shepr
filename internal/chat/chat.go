@@ -49,9 +49,9 @@ func Run() error {
 	if c.tab == "" || c.self == "" {
 		return errors.New("shepr chat runs as a herdr plugin pane")
 	}
-	fromAgents := make(chan [2]string, 16)
-	stdin := splitInput(os.Stdin, c.isMember, func(author, text string) {
-		fromAgents <- [2]string{author, text}
+	fromAgents := make(chan [3]string, 16)
+	stdin := splitInput(os.Stdin, c.member, func(author, pane, text string) {
+		fromAgents <- [3]string{author, pane, text}
 	})
 	rl, err := readline.NewEx(&readline.Config{Stdin: stdin, Prompt: "› ", UniqueEditLine: true})
 	if err != nil {
@@ -62,7 +62,7 @@ func Run() error {
 	go c.watch()
 	go func() {
 		for m := range fromAgents {
-			c.post(m[0], m[1])
+			c.post(m[0], m[1], m[2])
 		}
 	}()
 
@@ -82,7 +82,7 @@ func Run() error {
 	}()
 	for text, ok := pasted(lines); ok; text, ok = pasted(lines) {
 		if text = strings.TrimSpace(text); text != "" {
-			c.post(human, text)
+			c.post(human, "", text)
 		}
 	}
 	// readline's Close blocks on its input loop, so leave raw mode and return.
@@ -110,9 +110,9 @@ func pasted(lines <-chan string) (string, bool) {
 	}
 }
 
-// post shows a message and delivers it to every agent in the tab but its
-// author, as "author: text".
-func (c *chat) post(author, text string) {
+// post shows a message and delivers it to every agent in the tab but the one
+// in pane, its author, as "author: text". The human's messages have no pane.
+func (c *chat) post(author, pane, text string) {
 	c.send.Lock()
 	defer c.send.Unlock()
 	fmt.Fprintf(c.out, "\n%s  %s\n%s\n", colorName(author), dim(time.Now().Format("15:04")), text)
@@ -120,7 +120,7 @@ func (c *chat) post(author, text string) {
 	var mu sync.Mutex
 	var missed []string
 	for _, a := range c.roster() {
-		if a.Handle() == author {
+		if a.PaneID == pane {
 			continue
 		}
 		wg.Add(1)
@@ -190,22 +190,30 @@ func (c *chat) roster() []herdr.Agent {
 	return c.members
 }
 
-// isMember reports whether name is an agent in this tab, asking herdr afresh
-// on a miss so a post right after a rename is not lost.
-func (c *chat) isMember(name string) bool {
-	has := func(ms []herdr.Agent) bool {
+// member resolves name to the pane of an agent in this tab. On a miss it asks
+// herdr afresh and keeps the answer, so a message sent right after a rename is
+// taken and not delivered back to its author.
+func (c *chat) member(name string) (string, bool) {
+	find := func(ms []herdr.Agent) (string, bool) {
 		for _, a := range ms {
 			if a.Handle() == name {
-				return true
+				return a.PaneID, true
 			}
 		}
-		return false
+		return "", false
 	}
-	if has(c.roster()) {
-		return true
+	if pane, ok := find(c.roster()); ok {
+		return pane, true
 	}
 	all, err := herdr.Agents()
-	return err == nil && has(c.inTab(all))
+	if err != nil {
+		return "", false
+	}
+	ms := c.inTab(all)
+	c.mu.Lock()
+	c.members = ms
+	c.mu.Unlock()
+	return find(ms)
 }
 
 var color = os.Getenv("NO_COLOR") == ""

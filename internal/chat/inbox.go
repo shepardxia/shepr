@@ -13,19 +13,23 @@ const burstGap = 25 * time.Millisecond
 var sentRe = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,31}):\s*([\s\S]*\S)\s*$`)
 
 // sent reads a burst as a message an agent sent with herdr pane send-text: one
-// write that starts with a member's name and a colon.
-func sent(burst string, isMember func(string) bool) (author, text string, ok bool) {
+// write that starts with a member's name and a colon. member resolves a name to
+// the agent's pane.
+func sent(burst string, member func(string) (string, bool)) (author, pane, text string, ok bool) {
 	m := sentRe.FindStringSubmatch(burst)
-	if m == nil || !isMember(m[1]) {
-		return "", "", false
+	if m == nil {
+		return "", "", "", false
 	}
-	return m[1], m[2], true
+	if pane, ok = member(m[1]); !ok {
+		return "", "", "", false
+	}
+	return m[1], pane, m[2], true
 }
 
 // splitInput reads the terminal, hands agent messages to fromAgent, and passes
 // everything else, keystrokes and the human's own pastes, to the returned
 // reader for the input line.
-func splitInput(in io.Reader, isMember func(string) bool, fromAgent func(author, text string)) io.ReadCloser {
+func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func(author, pane, text string)) io.ReadCloser {
 	chunks := make(chan []byte)
 	go func() {
 		defer close(chunks)
@@ -56,8 +60,8 @@ func splitInput(in io.Reader, isMember func(string) bool, fromAgent func(author,
 					more = false
 				}
 			}
-			if author, text, ok := sent(string(burst), isMember); ok {
-				fromAgent(author, text)
+			if author, pane, text, ok := sent(string(burst), member); ok {
+				fromAgent(author, pane, text)
 				continue
 			}
 			if _, err := pw.Write(burst); err != nil {

@@ -3,7 +3,7 @@ package chat
 import "testing"
 
 func TestSent(t *testing.T) {
-	member := func(n string) bool { return n == "dixie" }
+	member := func(n string) (string, bool) { return "w1:p2", n == "dixie" }
 	cases := []struct {
 		in, author, text string
 		ok               bool
@@ -17,9 +17,9 @@ func TestSent(t *testing.T) {
 		{"d", "", "", false},
 	}
 	for _, c := range cases {
-		a, b, ok := sent(c.in, member)
-		if ok != c.ok || a != c.author || b != c.text {
-			t.Errorf("sent(%q) = %q, %q, %v", c.in, a, b, ok)
+		a, pane, b, ok := sent(c.in, member)
+		if ok != c.ok || a != c.author || b != c.text || (ok && pane != "w1:p2") {
+			t.Errorf("sent(%q) = %q, %q, %q, %v", c.in, a, pane, b, ok)
 		}
 	}
 }
