@@ -1,6 +1,10 @@
 package chat
 
-import "testing"
+import (
+	"io"
+	"strings"
+	"testing"
+)
 
 func TestSent(t *testing.T) {
 	member := func(n string) (string, bool) { return "w1:p2", n == "dixie" }
@@ -30,5 +34,14 @@ func TestFreeName(t *testing.T) {
 		if got := freeName(kind, taken); got != want {
 			t.Errorf("freeName(%q) = %q, want %q", kind, got, want)
 		}
+	}
+}
+
+func TestEditKeys(t *testing.T) {
+	keys := "ab\x1b[1;3Dc\x1b[1;9C"
+	r := splitInput(strings.NewReader(keys), func(string) (string, bool) { return "", false }, nil)
+	got, _ := io.ReadAll(r)
+	if string(got) != "ab\x1bbc\x05" {
+		t.Fatalf("got %q", got)
 	}
 }

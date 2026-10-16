@@ -3,7 +3,17 @@ package chat
 import (
 	"io"
 	"regexp"
+	"strings"
 	"time"
+)
+
+// editKeys rewrites the modified arrows herdr sends into keys the input line
+// knows: Option or Ctrl with an arrow jumps a word, Cmd with an arrow goes to
+// the start or end of the line.
+var editKeys = strings.NewReplacer(
+	"\x1b[1;3D", "\x1bb", "\x1b[1;3C", "\x1bf",
+	"\x1b[1;5D", "\x1bb", "\x1b[1;5C", "\x1bf",
+	"\x1b[1;9D", "\x01", "\x1b[1;9C", "\x05",
 )
 
 // burstGap is how long input may pause and still count as one burst. herdr
@@ -64,7 +74,7 @@ func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func
 				fromAgent(author, pane, text)
 				continue
 			}
-			if _, err := pw.Write(burst); err != nil {
+			if _, err := pw.Write([]byte(editKeys.Replace(string(burst)))); err != nil {
 				return
 			}
 		}
