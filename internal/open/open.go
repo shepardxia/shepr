@@ -58,21 +58,11 @@ func Run() error {
 }
 
 func chatPane(tab string) (string, error) {
-	raw, err := herdr.Call("pane.list", map[string]any{})
+	panes, err := herdr.Panes()
 	if err != nil {
 		return "", err
 	}
-	var out struct {
-		Panes []struct {
-			PaneID string `json:"pane_id"`
-			TabID  string `json:"tab_id"`
-			Label  string `json:"label"`
-		} `json:"panes"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", err
-	}
-	for _, p := range out.Panes {
+	for _, p := range panes {
 		if p.TabID == tab && p.Label == chatTitle {
 			return p.PaneID, nil
 		}

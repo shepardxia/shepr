@@ -5,34 +5,30 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-// burstGap is how long input may pause and still count as one burst. herdr
-// pane send-text writes a whole message at once; typing is far slower.
+// burstGap is how long the rest of a post may trail its first read: herdr pane
+// send-text writes a post at once, but the terminal hands a long one to the
+// pane in several reads.
 const burstGap = 25 * time.Millisecond
 
 // A paste arrives between these markers.
 const pasteStart, pasteEnd = "\x1b[200~", "\x1b[201~"
 
-var sentRe = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,31}):\s*([\s\S]*\S)\s*$`)
+// postRe matches a read that starts a post sent with herdr pane send-text: a
+// name and a colon.
+var postRe = regexp.MustCompile(`^([a-z][a-z0-9_-]{0,31}):`)
 
-// sent reads a burst as a message an agent sent with herdr pane send-text: one
-// write that starts with a member's name and a colon. member resolves a name to
-// the agent's pane.
-func sent(burst string, member func(string) (string, bool)) (author, pane, text string, ok bool) {
-	m := sentRe.FindStringSubmatch(burst)
-	if m == nil {
-		return "", "", "", false
-	}
-	if pane, ok = member(m[1]); !ok {
-		return "", "", "", false
-	}
-	return m[1], pane, m[2], true
-}
+// isKey reports whether a read is a single keystroke: one character or one
+// escape sequence.
+func isKey(b []byte) bool { return b[0] == 0x1b || utf8.RuneCount(b) == 1 }
 
-// splitInput reads the terminal, hands agent messages to fromAgent, and passes
+// splitInput reads the terminal, hands posts to fromAgent, and passes
 // everything else, keystrokes and the human's pastes, to the returned reader.
-func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func(author, pane, text string)) io.Reader {
+// member resolves a post's name to its author's pane, empty for a name it does
+// not know; such a post still goes to fromAgent.
+func splitInput(in io.Reader, member func(string) string, fromAgent func(author, pane, text string)) io.Reader {
 	chunks := make(chan []byte)
 	go func() {
 		defer close(chunks)
@@ -50,38 +46,48 @@ func splitInput(in io.Reader, member func(string) (string, bool), fromAgent func
 	pr, pw := io.Pipe()
 	go func() {
 		defer pw.Close()
-		for burst := range chunks {
-			for more := true; more; {
-				select {
-				case next, ok := <-chunks:
-					if !ok {
-						more = false
-					} else {
-						burst = append(burst, next...)
+		pasting := false
+		for chunk := range chunks {
+			for chunk != nil {
+				m := postRe.FindSubmatch(chunk)
+				if m == nil || pasting {
+					// A paste is the human's text, however its reads start.
+					if s := string(chunk); strings.Contains(s, pasteStart) || strings.Contains(s, pasteEnd) {
+						pasting = strings.LastIndex(s, pasteStart) > strings.LastIndex(s, pasteEnd)
 					}
-				case <-time.After(burstGap):
-					more = false
-				}
-			}
-			// A paste is the human's text, however it starts, so it is kept
-			// whole until it ends.
-			for s := string(burst); strings.LastIndex(s, pasteStart) > strings.LastIndex(s, pasteEnd); s = string(burst) {
-				next, ok := <-chunks
-				if !ok {
+					if _, err := pw.Write(chunk); err != nil {
+						return
+					}
 					break
 				}
-				burst = append(burst, next...)
-			}
-			if !strings.Contains(string(burst), pasteStart) {
-				if author, pane, text, ok := sent(string(burst), member); ok {
-					fromAgent(author, pane, text)
-					continue
+				var post []byte
+				post, chunk = gather(chunk, chunks)
+				if text := strings.TrimSpace(string(post[len(m[0]):])); text != "" {
+					fromAgent(string(m[1]), member(string(m[1])), text)
 				}
-			}
-			if _, err := pw.Write(burst); err != nil {
-				return
 			}
 		}
 	}()
 	return pr
+}
+
+// gather joins the post that starts with first and the reads within burstGap
+// that carry the rest of it. A keystroke or another post ends it and is
+// returned as after.
+func gather(first []byte, chunks <-chan []byte) (post, after []byte) {
+	post = first
+	for {
+		select {
+		case next, ok := <-chunks:
+			if !ok {
+				return post, nil
+			}
+			if isKey(next) || postRe.Match(next) {
+				return post, next
+			}
+			post = append(post, next...)
+		case <-time.After(burstGap):
+			return post, nil
+		}
+	}
 }

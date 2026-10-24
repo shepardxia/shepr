@@ -4,6 +4,7 @@ package herdr
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -54,6 +55,15 @@ func Call(method string, params any) (json.RawMessage, error) {
 	return resp.Result, nil
 }
 
+// Code is the code of the herdr refusal in err, empty for any other error.
+func Code(err error) string {
+	var he *Error
+	if errors.As(err, &he) {
+		return he.Code
+	}
+	return ""
+}
+
 // Agent is the part of herdr's agent record shepr reads.
 type Agent struct {
 	Kind   string `json:"agent"`
@@ -61,6 +71,9 @@ type Agent struct {
 	Status string `json:"agent_status"`
 	PaneID string `json:"pane_id"`
 	TabID  string `json:"tab_id"`
+	// LastTurn places the agent's latest finished turn in herdr's event
+	// sequence; it grows with every turn the agent finishes.
+	LastTurn uint64 `json:"completion_seq"`
 }
 
 // Handle is how an agent appears in the chat: its herdr name, else its kind.
@@ -71,19 +84,91 @@ func (a Agent) Handle() string {
 	return a.Kind
 }
 
+// get calls method and decodes its result into out.
+func get(method string, params, out any) error {
+	raw, err := Call(method, params)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+
 // Agents lists every live agent.
 func Agents() ([]Agent, error) {
-	raw, err := Call("agent.list", map[string]any{})
-	if err != nil {
-		return nil, err
-	}
 	var out struct {
 		Agents []Agent `json:"agents"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	err := get("agent.list", map[string]any{}, &out)
+	return out.Agents, err
+}
+
+// Pane is the part of herdr's pane record shepr reads.
+type Pane struct {
+	PaneID string `json:"pane_id"`
+	TabID  string `json:"tab_id"`
+	Label  string `json:"label"`
+	Cwd    string `json:"cwd"`
+}
+
+// Panes lists every pane.
+func Panes() ([]Pane, error) {
+	var out struct {
+		Panes []Pane `json:"panes"`
+	}
+	err := get("pane.list", map[string]any{}, &out)
+	return out.Panes, err
+}
+
+// Rect is a pane's place in its tab, in cells.
+type Rect struct {
+	PaneID string
+	Width  int
+	Height int
+}
+
+// Layout is every pane in the tab that holds pane, with its size.
+func Layout(pane string) ([]Rect, error) {
+	var out struct {
+		Layout struct {
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+				Rect   struct {
+					Width  int `json:"width"`
+					Height int `json:"height"`
+				} `json:"rect"`
+			} `json:"panes"`
+		} `json:"layout"`
+	}
+	if err := get("pane.layout", map[string]any{"pane_id": pane}, &out); err != nil {
 		return nil, err
 	}
-	return out.Agents, nil
+	rects := make([]Rect, len(out.Layout.Panes))
+	for i, p := range out.Layout.Panes {
+		rects[i] = Rect{p.PaneID, p.Rect.Width, p.Rect.Height}
+	}
+	return rects, nil
+}
+
+// Split opens a shell pane beside target, without focus, and returns it.
+func Split(target, direction, cwd string) (string, error) {
+	var out struct {
+		Pane Pane `json:"pane"`
+	}
+	err := get("pane.split", map[string]any{"target_pane_id": target, "direction": direction, "cwd": cwd, "focus": false}, &out)
+	return out.Pane.PaneID, err
+}
+
+// ClosePane closes pane and ends its process.
+func ClosePane(pane string) error {
+	_, err := Call("pane.close", map[string]any{"pane_id": pane})
+	return err
+}
+
+// Start launches an agent of kind under name in pane, a shell at its prompt.
+// herdr checks kind before pane, so an unsupported kind fails on any pane.
+func Start(name, kind, pane string) error {
+	_, err := Call("agent.start", map[string]any{"name": name, "kind": kind, "pane_id": pane})
+	return err
 }
 
 // Prompt submits text and Enter to the agent in pane.
