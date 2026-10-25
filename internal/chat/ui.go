@@ -43,7 +43,7 @@ func helpText() string {
 		[2]string{"tab", "complete a name or command"},
 		[2]string{"up / down", "recall sent messages"},
 		[2]string{"pgup / pgdn", "scroll the chat; so does the mouse wheel"},
-		[2]string{"alt+enter", "new line"},
+		[2]string{"shift+enter", "new line (also alt+enter or ctrl+j)"},
 		[2]string{"//text", "send text that starts with /"})
 	lines := make([]string, len(rows))
 	for i, r := range rows {
@@ -138,7 +138,7 @@ func newModel(c *chat) model {
 	in.DynamicHeight = true
 	in.MaxHeight = 8
 	in.MaxContentHeight = 10000
-	in.KeyMap.InsertNewline.SetKeys("alt+enter", "ctrl+j")
+	in.KeyMap.InsertNewline.SetKeys("shift+enter", "alt+enter", "ctrl+j")
 	in.KeyMap.LineStart.SetKeys("home", "ctrl+a", "meta+left")
 	in.KeyMap.LineEnd.SetKeys("end", "ctrl+e", "meta+right")
 	styles := textarea.DefaultDarkStyles()
