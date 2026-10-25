@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/shepardxia/shepr/internal/herdr"
 )
 
@@ -255,11 +258,92 @@ func TestOutboxRetries(t *testing.T) {
 }
 
 func TestWelcomeRecap(t *testing.T) {
-	if got := welcomeFor("rook", "w1:p9", nil); strings.Contains(got, "so far") {
+	if got := welcomeFor("rook", "w1:p9", nil); strings.Contains(got, "missed") {
 		t.Errorf("no recap without history")
 	}
 	got := welcomeFor("rook", "w1:p9", []message{{"pauley", "w1:p3", "hi"}})
 	if !strings.HasSuffix(got, "latest last:\n\npauley: hi") {
 		t.Errorf("recap missing: %q", got[len(got)-60:])
+	}
+}
+
+func TestGiveColor(t *testing.T) {
+	c := newChat("w1:t1", "w1:p9")
+	join := func(pane string) int {
+		c.room[pane] = herdr.Agent{PaneID: pane}
+		c.giveColor(pane)
+		return c.colors[pane]
+	}
+	seen := map[int]bool{}
+	for i := range palette {
+		seen[join(fmt.Sprintf("w1:p%d", i))] = true
+	}
+	if len(seen) != len(palette) {
+		t.Errorf("members up to the palette's size each get their own color, got %v", c.colors)
+	}
+	sixth := join("w1:pX")
+	delete(c.room, "w1:p0")
+	delete(c.room, "w1:pX")
+	if again := join("w1:pX"); again != sixth {
+		t.Errorf("a member rejoining keeps a color no one else holds, got %d after %d", again, sixth)
+	}
+	delete(c.room, "w1:p1")
+	c.colors["w1:pY"] = c.colors["w1:p2"]
+	if got := join("w1:pY"); got == c.colors["w1:p2"] {
+		t.Errorf("a member whose old color is taken gets another, got %d", got)
+	}
+}
+
+func TestHistoryRewraps(t *testing.T) {
+	text := "trap metal isn't something metal invented, it's rap that bought a Behemoth shirt"
+	words := map[string]bool{}
+	for _, w := range strings.Fields(text) {
+		words[w] = true
+	}
+	var m tea.Model = newModel(newChat("w1:t1", "w1:p9"))
+	m, _ = m.Update(printMsg{"wren", text})
+	for _, width := range []int{40, 24, 60} {
+		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 12})
+		h := m.(model).history
+		lines := strings.Split(ansi.Strip(h.View()), "\n")
+		if !strings.Contains(lines[len(lines)-1], "shirt") {
+			t.Errorf("width %d: the history should end at its latest line, got %q", width, lines)
+		}
+		for _, l := range lines {
+			if ansi.StringWidth(l) > width {
+				t.Errorf("width %d: line %q overflows", width, l)
+			}
+			for _, w := range strings.Fields(l) {
+				if !words[w] && w != "wren" {
+					t.Errorf("width %d: %q is a broken word", width, w)
+				}
+			}
+		}
+	}
+}
+
+func TestHistoryFollows(t *testing.T) {
+	var m tea.Model = newModel(newChat("w1:t1", "w1:p9"))
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 12})
+	for i := range 20 {
+		m, _ = m.Update(printMsg{"wren", fmt.Sprintf("line %d of a chat long enough to scroll", i)})
+	}
+	last := func() string {
+		lines := strings.Split(ansi.Strip(m.(model).history.View()), "\n")
+		return lines[len(lines)-1]
+	}
+	steps := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"a shorter pane", tea.WindowSizeMsg{Width: 60, Height: 8}},
+		{"a narrower pane", tea.WindowSizeMsg{Width: 30, Height: 8}},
+		{"a taller input box", tea.PasteMsg{Content: "one\ntwo\nthree"}},
+	}
+	for _, s := range steps {
+		m, _ = m.Update(s.msg)
+		if !strings.Contains(last(), "scroll") {
+			t.Errorf("after %s the history should still end at its latest line, got %q", s.name, last())
+		}
 	}
 }

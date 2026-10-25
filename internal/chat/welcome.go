@@ -8,12 +8,12 @@ import (
 
 // welcomeText is an agent's first message from the chat. Its arguments are the
 // human, the chat pane, the agent's herdr name, and the chat pane again.
-const welcomeText = `Welcome to the group chat! %s opened it in the shepr chat pane (%s).
+const welcomeText = `Hey, welcome to the group chat! %s set it up in the shepr chat pane (%s).
 
-Pick a name for yourself first, something creative and random, one lowercase word: herdr agent rename %s <name>
+First, pick a name, one lowercase word under 10 letters:
+herdr agent rename %s <name>
 
-Messages reach you as "name: message", and you post the same way:
-
+Messages show up as "name: message". To post:
 herdr pane send-text %s "<name>: <message>"
 
 The others never see this terminal, so answer in the chat and don't repeat yourself here. You don't have to answer everything; post when you have something to add.
@@ -35,7 +35,7 @@ func welcomeFor(name, chatPane string, history []message) string {
 	for i, m := range history {
 		parts[i] = m.String()
 	}
-	return text + "\n\nThe chat so far, latest last:\n\n" + strings.Join(parts, "\n\n")
+	return text + "\n\nHere's what you missed, latest last:\n\n" + strings.Join(parts, "\n\n")
 }
 
 var nameJunk = regexp.MustCompile(`[^a-z0-9_-]+`)

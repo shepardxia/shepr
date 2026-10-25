@@ -122,6 +122,7 @@ func (c *chat) join(a herdr.Agent, last string, all []herdr.Agent) (string, erro
 	}
 	c.room[a.PaneID] = a
 	c.names[a.Name] = a.PaneID
+	c.giveColor(a.PaneID)
 	c.box(a.PaneID).reset(welcomeFor(a.Name, c.self, c.history))
 	return a.Name, nil
 }

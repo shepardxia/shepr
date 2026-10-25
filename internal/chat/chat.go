@@ -52,6 +52,7 @@ type chat struct {
 	kicked  map[string]bool        // panes in this tab the human removed
 	invited map[string]bool        // panes in other tabs the human added
 	names   map[string]string      // every name a member has held, to its pane
+	colors  map[string]int         // each member's place in palette, by pane
 	boxes   map[string]*outbox
 	holds   []*held
 	history []message // the latest messages every member got
@@ -62,7 +63,7 @@ func newChat(tab, self string) *chat {
 		tab: tab, self: self,
 		queue: make(chan message, 64), poke: make(chan struct{}, 1), prompt: herdr.Prompt,
 		room: map[string]herdr.Agent{}, kicked: map[string]bool{}, invited: map[string]bool{},
-		names: map[string]string{}, boxes: map[string]*outbox{},
+		names: map[string]string{}, colors: map[string]int{}, boxes: map[string]*outbox{},
 	}
 }
 
@@ -96,23 +97,23 @@ func (t terminal) Close() error                { return nil }
 func (t terminal) Fd() uintptr                 { return t.tty.Fd() }
 
 type (
-	printMsg  string   // a line to print above the input box
-	noteMsg   string   // a note on the room, printed faint
+	printMsg  entry    // an entry for the history
 	rosterMsg struct{} // the room changed
 )
 
-// print shows a line above the input box. It blocks until the program takes
-// it, so it never runs under mu; nor does note.
-func (c *chat) print(line string) {
+// print adds a message under head to the history. It blocks until the program
+// takes it, so it never runs under mu; nor does note.
+func (c *chat) print(head, text string) {
 	if c.p != nil {
-		c.p.Send(printMsg(line))
+		c.p.Send(printMsg{head, text})
 	}
 }
 
+// note adds notes on the room to the history.
 func (c *chat) note(notes ...string) {
 	for _, n := range notes {
 		if c.p != nil {
-			c.p.Send(noteMsg(n))
+			c.p.Send(printMsg{text: n})
 		}
 	}
 }

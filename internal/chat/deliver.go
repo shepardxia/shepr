@@ -10,8 +10,9 @@ import (
 	"github.com/shepardxia/shepr/internal/herdr"
 )
 
-// retryGap is how long an outbox waits after herdr refuses a prompt, as it
-// does while the agent sits at an approval dialog.
+// retryGap is how long an outbox waits after a prompt fails: herdr refuses it
+// while the agent sits at an approval dialog, and reports it stalled when the
+// agent never took it up.
 const retryGap = 2 * time.Second
 
 // historySize is how many messages a joining agent gets as a recap.
@@ -35,12 +36,13 @@ func (c *chat) deliver() {
 	for msg := range c.queue {
 		c.mu.Lock()
 		kicked := c.kicked[msg.pane]
+		name := c.nameStyle(msg.author, msg.pane).Render(msg.author)
 		c.mu.Unlock()
 		if kicked {
 			c.note("dropped a post from " + msg.author + ", who is not in the room")
 			continue
 		}
-		c.print("\n" + byline(msg.author) + "\n" + c.highlight(msg.text))
+		c.print(name+"  "+faint.Render(time.Now().Format("15:04")), c.highlight(msg.text))
 		if mentionRe.MatchString(msg.text) {
 			// A hold notes each agent's last turn, so it needs them fresh.
 			if all, err := herdr.Agents(); err == nil {

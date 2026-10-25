@@ -171,9 +171,12 @@ func Start(name, kind, pane string) error {
 	return err
 }
 
-// Prompt submits text and Enter to the agent in pane.
+// Prompt submits text and Enter to the agent in pane and waits until the
+// agent takes it up. It fails with agent_prompt_stalled when the agent shows
+// no activity, as when input reaches an agent that is still starting.
 func Prompt(pane, text string) error {
-	_, err := Call("agent.prompt", map[string]any{"target": pane, "text": text})
+	wait := map[string]any{"until": []string{"working", "blocked"}, "timeout_ms": 20000}
+	_, err := Call("agent.prompt", map[string]any{"target": pane, "text": text, "wait": wait})
 	return err
 }
 

@@ -136,6 +136,13 @@ func dock(ws, tab, chat string) error {
 	if err := rebuild(rest, back); err != nil {
 		return restore(tab, anchor, away, err)
 	}
+	// A moved pane's terminal keeps its old size until the next resize, so the
+	// chat is nudged up and back to learn its width.
+	for _, direction := range []string{"up", "down"} {
+		if _, err := herdr.Call("pane.resize", map[string]any{"pane_id": chat, "direction": direction, "amount": 0.01}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
