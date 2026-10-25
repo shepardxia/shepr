@@ -29,7 +29,6 @@ func init() {
 	commands = []command{
 		{"add", "<kind|name>", "start an agent of a kind here, or bring in a live one by name", (*chat).add, (*chat).addable},
 		{"kick", "<name>", "take an agent out of the room; it keeps running", (*chat).kick, (*chat).memberNames},
-		{"release", "", "send held @messages to everyone now", func(c *chat, _ string) string { return c.releaseAll() }, nil},
 		{"help", "", "list commands and keys", func(*chat, string) string { return helpText() }, nil},
 	}
 }
@@ -40,7 +39,7 @@ func helpText() string {
 		rows = append(rows, [2]string{"/" + strings.TrimSpace(cmd.name+" "+cmd.args), cmd.help})
 	}
 	rows = append(rows,
-		[2]string{"@name", "send to that agent first; the rest get it with its reply"},
+		[2]string{"@name", "send only to that agent; its reply stays in the chat"},
 		[2]string{"tab", "complete a name or command"},
 		[2]string{"up / down", "recall sent messages"},
 		[2]string{"pgup / pgdn", "scroll the chat; so does the mouse wheel"},
@@ -90,13 +89,26 @@ type entry struct{ head, text string }
 // render is the entry word-wrapped to width.
 func (e entry) render(width int) string {
 	if e.head == "" {
-		lines := strings.Split(lipgloss.Wrap(e.text, max(width-2, 1), ""), "\n")
+		indent := strings.Repeat(" ", min(2, max(width-1, 0)))
+		lines := strings.Split(lipgloss.Wrap(e.text, max(width-len(indent), 1), ""), "\n")
 		for i, l := range lines {
-			lines[i] = faint.Render("  " + l)
+			lines[i] = faint.Render(indent + l)
 		}
 		return strings.Join(lines, "\n")
 	}
-	return "\n" + e.head + "\n" + lipgloss.Wrap(e.text, width, "")
+	return "\n" + lipgloss.Wrap(e.head, width, "") + "\n" + lipgloss.Wrap(e.text, width, "")
+}
+
+// plainText keeps message contents from moving the terminal cursor or
+// changing its styles. Normalize line endings before wrapping to cell width.
+func plainText(text string) string {
+	text = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\t", "    ").Replace(ansi.Strip(text))
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' {
+			return -1
+		}
+		return r
+	}, text))
 }
 
 // logSize is how many entries the history keeps.
@@ -121,7 +133,7 @@ type doneMsg string
 func newModel(c *chat) model {
 	in := textarea.New()
 	in.Prompt = "› "
-	in.Placeholder = "message the room · @name asks first · /help"
+	in.Placeholder = "message the room · @name directs · /help"
 	in.ShowLineNumbers = false
 	in.DynamicHeight = true
 	in.MaxHeight = 8
@@ -132,6 +144,7 @@ func newModel(c *chat) model {
 	styles := textarea.DefaultDarkStyles()
 	styles.Focused.CursorLine = lipgloss.NewStyle()
 	in.SetStyles(styles)
+	in.SetVirtualCursor(false)
 	in.Focus()
 	history := viewport.New()
 	history.KeyMap = viewport.KeyMap{
@@ -144,7 +157,17 @@ func newModel(c *chat) model {
 func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	return next.layout(), cmd
+}
+
+func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case message:
+		if e := m.c.receive(msg); e != nil {
+			m = m.add(*e)
+		}
+		return m, nil
 	case printMsg:
 		return m.add(entry(msg)), nil
 	case doneMsg:
@@ -154,8 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.SetWidth(msg.Width)
-		return m.layout(), nil
+		return m, nil
 	case tea.MouseWheelMsg:
 		m.history, _ = m.history.Update(msg)
 		return m, nil
@@ -206,7 +228,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	return m.layout(), cmd
+	return m, cmd
 }
 
 // add appends e to the history.
@@ -220,12 +242,20 @@ func (m model) add(e entry) model {
 
 // layout gives the history what the status line and the input box leave.
 func (m model) layout() model {
-	height := max(m.height-1-m.input.Height(), 1)
-	if height == m.history.Height() && m.width == m.history.Width() {
+	if m.width < 1 || m.height < 1 {
+		return m
+	}
+	// Leave the terminal's final column free so wrapped text never touches
+	// its auto-wrap boundary. Every component uses this same content width.
+	width := max(m.width-1, 1)
+	m.input.MaxHeight = max(1, min(8, m.height-2))
+	m.input.SetWidth(width)
+	height := max(m.height-1-m.input.Height(), 0)
+	if height == m.history.Height() && width == m.history.Width() {
 		return m
 	}
 	bottom := m.history.AtBottom()
-	m.history.SetWidth(m.width)
+	m.history.SetWidth(width)
 	m.history.SetHeight(height)
 	return m.refill(bottom)
 }
@@ -233,12 +263,12 @@ func (m model) layout() model {
 // refill wraps the history to the width, padded so a short one sits just above
 // the input box, and keeps it at the bottom if it was there.
 func (m model) refill(bottom bool) model {
-	if m.width == 0 {
+	if m.history.Width() == 0 {
 		return m
 	}
 	var lines []string
 	for _, e := range m.log {
-		lines = append(lines, strings.Split(e.render(m.width), "\n")...)
+		lines = append(lines, strings.Split(e.render(m.history.Width()), "\n")...)
 	}
 	if pad := m.history.Height() - len(lines); pad > 0 {
 		lines = append(make([]string, pad), lines...)
@@ -251,7 +281,7 @@ func (m model) refill(bottom bool) model {
 }
 
 // submit sends the input box as a message, or runs it as a command.
-func (m model) submit() (tea.Model, tea.Cmd) {
+func (m model) submit() (model, tea.Cmd) {
 	text := strings.TrimSpace(m.input.Value())
 	if text == "" {
 		return m, nil
@@ -262,7 +292,9 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	m.recall, m.draft = len(m.sent), ""
 	if !strings.HasPrefix(text, "/") || strings.HasPrefix(text, "//") {
 		m.input.Reset()
-		m.c.queue <- message{author: human, text: strings.TrimPrefix(text, "/")}
+		if e := m.c.receive(message{author: human, text: strings.TrimPrefix(text, "/")}); e != nil {
+			m = m.add(*e)
+		}
 		return m, nil
 	}
 	name, arg, _ := strings.Cut(text[1:], " ")
@@ -283,16 +315,32 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
+	if m.width < 1 || m.height < 1 {
+		return tea.NewView("")
+	}
 	top := m.statusLine()
 	if c, ok := m.completion(); ok {
 		top = suggestLine(c)
 	} else if m.pending != "" {
 		top = faint.Render(m.pending)
 	}
-	if m.width > 1 {
-		top = ansi.Truncate(top, m.width-1, "…")
+	top = ansi.Truncate(top, max(m.width-1, 1), "…")
+	var parts []string
+	if m.history.Height() > 0 {
+		parts = append(parts, m.history.View())
 	}
-	v := tea.NewView(m.history.View() + "\n" + top + "\n" + m.input.View())
+	if m.height > 1 {
+		parts = append(parts, top)
+	}
+	parts = append(parts, lipgloss.NewStyle().MaxWidth(m.width).Render(m.input.View()))
+	v := tea.NewView(strings.Join(parts, "\n"))
+	v.Cursor = m.input.Cursor()
+	if v.Cursor != nil {
+		v.Cursor.Position.Y += m.height - m.input.Height()
+		if v.Cursor.Position.X >= m.width {
+			v.Cursor = nil
+		}
+	}
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
@@ -426,8 +474,7 @@ func (c *chat) highlight(text string) string {
 	})
 }
 
-// statusLine lists the members, each with a dot for its state and a count of
-// what herdr keeps refusing it, then the agents a hold waits on.
+// statusLine lists members, their state, and any refused deliveries.
 func (m model) statusLine() string {
 	c := m.c
 	c.mu.Lock()
@@ -443,20 +490,7 @@ func (m model) statusLine() string {
 			parts[i] += faint.Render(fmt.Sprintf(" %d queued, %s", n, why))
 		}
 	}
-	line := strings.Join(parts, "  ")
-	var waiting []string
-	for _, h := range c.holds {
-		for pane := range h.waiting {
-			if a, in := c.room[pane]; in {
-				waiting = append(waiting, a.Handle())
-			}
-		}
-	}
-	if len(waiting) > 0 {
-		slices.Sort(waiting)
-		line += faint.Render("   ⏸ held for " + strings.Join(slices.Compact(waiting), ", ") + " · /release")
-	}
-	return line
+	return strings.Join(parts, "  ")
 }
 
 func dot(a herdr.Agent) string {

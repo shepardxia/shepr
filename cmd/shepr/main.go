@@ -20,8 +20,10 @@ func main() {
 		err = chat.Run()
 	case "open":
 		err = open.Run()
+	case "post":
+		err = chat.Post(os.Args[2:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: shepr chat|open")
+		fmt.Fprintln(os.Stderr, "usage: shepr chat|open|post")
 		os.Exit(2)
 	}
 	if err != nil {

@@ -71,9 +71,6 @@ type Agent struct {
 	Status string `json:"agent_status"`
 	PaneID string `json:"pane_id"`
 	TabID  string `json:"tab_id"`
-	// LastTurn places the agent's latest finished turn in herdr's event
-	// sequence; it grows with every turn the agent finishes.
-	LastTurn uint64 `json:"completion_seq"`
 }
 
 // Handle is how an agent appears in the chat: its herdr name, else its kind.

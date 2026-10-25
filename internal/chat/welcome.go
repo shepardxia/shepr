@@ -7,14 +7,18 @@ import (
 )
 
 // welcomeText is an agent's first message from the chat. Its arguments are the
-// human, the chat pane, the agent's herdr name, and the chat pane again.
+// human, the chat pane, the agent's herdr name, and the post command.
 const welcomeText = `Hey, welcome to the group chat! %s set it up in the shepr chat pane (%s).
 
 First, pick a name, one lowercase word under 10 letters:
 herdr agent rename %s <name>
 
 Messages show up as "name: message". To post:
-herdr pane send-text %s "<name>: <message>"
+%s "<message>"
+
+Use this command to post; do not type into the chat pane. Your pane identifies you.
+An @name message goes only to that agent. When asked to reply locally, add --local
+before your message: it appears in the chat without prompting anyone else.
 
 The others never see this terminal, so answer in the chat and don't repeat yourself here. You don't have to answer everything; post when you have something to add.
 
@@ -26,8 +30,8 @@ const leaveText = `%s removed you from the group chat in the shepr chat pane (%s
 
 // welcomeFor is the welcome for the agent named name, followed by a recap of
 // history, the latest messages of the chat.
-func welcomeFor(name, chatPane string, history []message) string {
-	text := fmt.Sprintf(welcomeText, human, chatPane, name, chatPane)
+func welcomeFor(name, chatPane, postCommand string, history []message) string {
+	text := fmt.Sprintf(welcomeText, human, chatPane, name, postCommand)
 	if len(history) == 0 {
 		return text
 	}

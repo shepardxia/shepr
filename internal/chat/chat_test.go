@@ -2,7 +2,6 @@ package chat
 
 import (
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"testing"
@@ -23,76 +22,13 @@ func TestFreeName(t *testing.T) {
 	}
 }
 
-// split runs parts through splitInput, gap apart, and returns what reaches the
-// input box and the posts taken out as "pane|author: text".
-func split(gap time.Duration, parts ...string) (string, []string) {
-	pr, pw := io.Pipe()
-	go func() {
-		for i, p := range parts {
-			if i > 0 {
-				time.Sleep(gap)
-			}
-			pw.Write([]byte(p))
-		}
-		pw.Close()
-	}()
-	var taken []string
-	panes := map[string]string{"dixie": "w1:p2"}
-	member := func(n string) string { return panes[n] }
-	got, _ := io.ReadAll(splitInput(pr, member, func(author, pane, text string) { taken = append(taken, pane+"|"+author+": "+text) }))
-	return string(got), taken
-}
-
-func TestSplitInput(t *testing.T) {
-	apart := 3 * burstGap
-	cases := []struct {
-		name  string
-		gap   time.Duration
-		parts []string
-		got   string
-		taken []string
-	}{
-		{"typing then a post", apart, []string{"hel", "lo", "dixie: four"}, "hello", []string{"w1:p2|dixie: four"}},
-		{"keystrokes right around a post", 0, []string{"h", "dixie: four", "i", "\x1b[D"}, "hi\x1b[D", []string{"w1:p2|dixie: four"}},
-		{"two posts at once", 0, []string{"dixie: one", "rook: two"}, "", []string{"w1:p2|dixie: one", "|rook: two"}},
-		{"a post over several reads", 0, []string{"dixie: two\nli", "nes\n"}, "", []string{"w1:p2|dixie: two\nlines"}},
-		{"a name no agent holds", apart, []string{"rook: 4"}, "", []string{"|rook: 4"}},
-		{"an empty post", apart, []string{"dixie:  "}, "", nil},
-		{"not a name", apart, []string{"Dixie: 4", "d"}, "Dixie: 4d", nil},
-		{"a paste starting with a name", apart, []string{"\x1b[200~dixie: pasted\x1b[201~"}, "\x1b[200~dixie: pasted\x1b[201~", nil},
-		{"a paste over several reads", apart, []string{"\x1b[200~a\r", "dixie: b\x1b[201~"}, "\x1b[200~a\rdixie: b\x1b[201~", nil},
-	}
-	for _, c := range cases {
-		got, taken := split(c.gap, c.parts...)
-		if got != c.got || strings.Join(taken, ",") != strings.Join(c.taken, ",") {
-			t.Errorf("%s: got %q, taken %q", c.name, got, taken)
-		}
-	}
-}
-
-func TestUnseen(t *testing.T) {
-	rook, pauley := herdr.Agent{PaneID: "w1:p2"}, herdr.Agent{PaneID: "w1:p3"}
-	reply := &message{"rook", "w1:p2", "because"}
-	why := &held{msg: message{"Shepard", "", "@rook why?"}, first: map[string]bool{"w1:p2": true}, replies: []*message{reply}}
-	if got := unseen(rook, why); got != "" {
-		t.Errorf("rook saw both already, got %q", got)
-	}
-	if got := unseen(pauley, why); got != "Shepard: @rook why?\n\nrook: because" {
-		t.Errorf("pauley gets the question and the reply, got %q", got)
-	}
-	how := &held{msg: message{"Shepard", "", "@rook how?"}, first: map[string]bool{"w1:p2": true}, replies: []*message{reply}}
-	if got := unseen(pauley, why, how); got != "Shepard: @rook why?\n\nShepard: @rook how?\n\nrook: because" {
-		t.Errorf("one reply to two questions comes once, got %q", got)
-	}
-}
-
 func TestMentioned(t *testing.T) {
 	members := []herdr.Agent{{Name: "rook", PaneID: "w1:p2"}, {Name: "pauley", PaneID: "w1:p3"}}
-	got := mentioned(message{"Shepard", "", "@rook and mail me at a@pauley.dev"}, members)
+	got := mentioned(message{author: "Shepard", text: "@rook and mail me at a@pauley.dev"}, members)
 	if len(got) != 1 || got[0].Name != "rook" {
 		t.Errorf("only the @ at a word start counts, got %+v", got)
 	}
-	if got := mentioned(message{"rook", "w1:p2", "@rook talking to myself"}, members); len(got) != 0 {
+	if got := mentioned(message{author: "rook", pane: "w1:p2", text: "@rook talking to myself"}, members); len(got) != 0 {
 		t.Errorf("an author does not mention itself, got %+v", got)
 	}
 }
@@ -119,51 +55,26 @@ func show(out []delivery) string {
 
 func TestRoute(t *testing.T) {
 	c := newRoom()
-	ask := message{human, "", "@rook why?"}
+	c.post = "shepr post room.sock"
+	ask := message{author: human, text: "@rook why?"}
 	steps := []struct {
 		msg  message
 		want string
 	}{
-		{message{human, "", "hi"}, "w1:p2<" + human + ": hi | w1:p3<" + human + ": hi"},
-		{message{"rook", "w1:p2", "hey"}, "w1:p3<rook: hey"},
-		{ask, "w1:p2<" + ask.String()},
-		{message{"pauley", "w1:p3", "meanwhile"}, "w1:p2<pauley: meanwhile"},
-		{message{"rook", "w1:p2", "because"}, "w1:p3<" + ask.String() + "\n\nrook: because"},
+		{message{author: human, text: "hi"}, "w1:p2<" + human + ": hi | w1:p3<" + human + ": hi"},
+		{message{author: "rook", pane: "w1:p2", text: "hey"}, "w1:p3<rook: hey"},
+		{ask, "w1:p2<" + ask.String() + "\n\nReply in the chat only: shepr post room.sock --local \"<reply>\". Do not broadcast this exchange."},
+		{message{author: "rook", pane: "w1:p2", text: "because", local: true}, ""},
+		{message{author: human, text: "@nobody typo"}, ""},
+		{message{author: "pauley", pane: "w1:p3", text: "meanwhile"}, "w1:p2<pauley: meanwhile"},
 	}
 	for i, s := range steps {
-		out, _ := c.route(s.msg)
-		if got := show(out); got != s.want {
+		if got := show(c.route(s.msg)); got != s.want {
 			t.Errorf("step %d: got %q, want %q", i, got, s.want)
 		}
 	}
-	if len(c.holds) != 0 || len(c.history) != 5 {
-		t.Errorf("the hold should be released into the history, holds %d, history %d", len(c.holds), len(c.history))
-	}
-}
-
-func TestHoldSettles(t *testing.T) {
-	c := newRoom()
-	ask := message{human, "", "@rook why?"}
-	c.route(ask)
-	if out, _ := c.settle(); len(out) != 0 {
-		t.Fatalf("rook has not finished a turn, got %q", show(out))
-	}
-	c.live[0].LastTurn, c.live[0].Status = 1, "done"
-	c.room["w1:p2"] = c.live[0]
-	out, notes := c.settle()
-	if show(out) != "w1:p3<"+ask.String() || len(notes) != 1 {
-		t.Errorf("a finished turn without a reply releases the hold, got %q %q", show(out), notes)
-	}
-	c.route(ask)
-	delete(c.room, "w1:p2")
-	if out, _ := c.settle(); show(out) != "w1:p3<"+ask.String() {
-		t.Errorf("a mentioned agent leaving releases the hold, got %q", show(out))
-	}
-	if out, _ := c.route(message{"pauley", "w1:p3", "@rook?"}); len(out) != 0 || len(c.holds) != 0 {
-		t.Errorf("a mention of no member goes to every member but its author, got %q", show(out))
-	}
-	if out, _ := c.route(message{human, "", "@pauley alone"}); show(out) != "w1:p3<"+human+": @pauley alone" || len(c.holds) != 0 {
-		t.Errorf("with no one else to hold for, nothing is held, got %q", show(out))
+	if len(c.history) != 3 {
+		t.Errorf("only room-wide messages belong in the recap, got %d", len(c.history))
 	}
 }
 
@@ -179,7 +90,7 @@ func TestUpdate(t *testing.T) {
 		{Name: "vesper", PaneID: "w2:p1", TabID: "w2:t1", Status: "idle"},
 		{Name: "oriole", PaneID: "w2:p2", TabID: "w2:t1", Status: "idle"},
 	}
-	joining, _, notes := c.update(all)
+	joining, notes := c.update(all)
 	var got []string
 	for _, a := range joining {
 		got = append(got, a.PaneID)
@@ -190,8 +101,8 @@ func TestUpdate(t *testing.T) {
 	if strings.Join(notes, "|") != "rook is now dixie|pauley left" {
 		t.Errorf("notes %q", notes)
 	}
-	if c.room["w1:p2"].Name != "dixie" || c.names["dixie"] != "w1:p2" {
-		t.Errorf("the rename should reach the room and the names, got %+v", c.room)
+	if c.room["w1:p2"].Name != "dixie" {
+		t.Errorf("the rename should reach the room, got %+v", c.room)
 	}
 }
 
@@ -202,21 +113,18 @@ func TestKick(t *testing.T) {
 		got <- pane + "<" + text
 		return nil
 	}
-	c.route(message{human, "", "@rook why?"})
 	if note := c.kick("rook"); note != "rook left the room" {
 		t.Errorf("note %q", note)
 	}
-	sent := []string{<-got, <-got}
-	sort.Strings(sent)
-	if want := []string{"w1:p2<" + fmt.Sprintf(leaveText, human, c.self), "w1:p3<" + human + ": @rook why?"}; sent[0] != want[0] || sent[1] != want[1] {
-		t.Errorf("rook should be told it left, and pauley get the released question, got %q", sent)
+	if sent := <-got; sent != "w1:p2<"+fmt.Sprintf(leaveText, human, c.self) {
+		t.Errorf("rook should be told it left, got %q", sent)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, in := c.room["w1:p2"]; in || !c.kicked["w1:p2"] || len(c.holds) != 0 {
-		t.Errorf("rook should be out, kicked, and the hold released: %+v", c.holds)
+	if _, in := c.room["w1:p2"]; in || !c.kicked["w1:p2"] {
+		t.Error("rook should be out of the room and kicked")
 	}
-	if joining, _, _ := c.update(c.live); len(joining) != 0 {
+	if joining, _ := c.update(c.live); len(joining) != 0 {
 		t.Errorf("a kicked agent does not rejoin, got %+v", joining)
 	}
 }
@@ -258,10 +166,10 @@ func TestOutboxRetries(t *testing.T) {
 }
 
 func TestWelcomeRecap(t *testing.T) {
-	if got := welcomeFor("rook", "w1:p9", nil); strings.Contains(got, "missed") {
+	if got := welcomeFor("rook", "w1:p9", "shepr post room.sock", nil); strings.Contains(got, "missed") {
 		t.Errorf("no recap without history")
 	}
-	got := welcomeFor("rook", "w1:p9", []message{{"pauley", "w1:p3", "hi"}})
+	got := welcomeFor("rook", "w1:p9", "shepr post room.sock", []message{{author: "pauley", pane: "w1:p3", text: "hi"}})
 	if !strings.HasSuffix(got, "latest last:\n\npauley: hi") {
 		t.Errorf("recap missing: %q", got[len(got)-60:])
 	}
@@ -295,7 +203,7 @@ func TestGiveColor(t *testing.T) {
 }
 
 func TestHistoryRewraps(t *testing.T) {
-	text := "trap metal isn't something metal invented, it's rap that bought a Behemoth shirt"
+	text := "I’m adding the shared infobar contract now; I’ll expose its native view and a layout call."
 	words := map[string]bool{}
 	for _, w := range strings.Fields(text) {
 		words[w] = true
@@ -303,10 +211,14 @@ func TestHistoryRewraps(t *testing.T) {
 	var m tea.Model = newModel(newChat("w1:t1", "w1:p9"))
 	m, _ = m.Update(printMsg{"wren", text})
 	for _, width := range []int{40, 24, 60} {
+		rendered := ansi.Strip((entry{"wren", text}).render(width - 1))
+		if got := strings.Join(strings.Fields(rendered), " "); got != "wren "+text {
+			t.Errorf("width %d lost text while wrapping: %q", width, got)
+		}
 		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 12})
 		h := m.(model).history
 		lines := strings.Split(ansi.Strip(h.View()), "\n")
-		if !strings.Contains(lines[len(lines)-1], "shirt") {
+		if !strings.Contains(lines[len(lines)-1], "call.") {
 			t.Errorf("width %d: the history should end at its latest line, got %q", width, lines)
 		}
 		for _, l := range lines {
@@ -339,11 +251,26 @@ func TestHistoryFollows(t *testing.T) {
 		{"a shorter pane", tea.WindowSizeMsg{Width: 60, Height: 8}},
 		{"a narrower pane", tea.WindowSizeMsg{Width: 30, Height: 8}},
 		{"a taller input box", tea.PasteMsg{Content: "one\ntwo\nthree"}},
+		{"clearing multiline input", tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}},
+		{"pasting again", tea.PasteMsg{Content: "one\ntwo\nthree"}},
+		{"submitting multiline input", tea.KeyPressMsg{Code: tea.KeyEnter}},
+		{"recalling multiline input", tea.KeyPressMsg{Code: tea.KeyUp}},
+		{"restoring the draft", tea.KeyPressMsg{Code: tea.KeyDown}},
 	}
 	for _, s := range steps {
 		m, _ = m.Update(s.msg)
-		if !strings.Contains(last(), "scroll") {
-			t.Errorf("after %s the history should still end at its latest line, got %q", s.name, last())
+		view := m.(model)
+		if !view.history.AtBottom() {
+			t.Errorf("after %s the history should follow the latest message, got %q", s.name, last())
+		}
+		lines := strings.Split(ansi.Strip(view.View().Content), "\n")
+		if len(lines) != view.height {
+			t.Errorf("after %s frame has %d rows for height %d", s.name, len(lines), view.height)
+		}
+		for _, line := range lines {
+			if ansi.StringWidth(line) > view.width {
+				t.Errorf("after %s frame overflows: %q", s.name, line)
+			}
 		}
 	}
 }
