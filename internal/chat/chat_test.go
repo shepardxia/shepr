@@ -184,7 +184,7 @@ func TestUpdate(t *testing.T) {
 	if strings.Join(got, " ") != "w1:p5 w2:p1" {
 		t.Errorf("joining %v: the ready agents of the tab not removed, and those added", got)
 	}
-	if strings.Join(notes, "|") != faint.Render("  rook is now dixie")+"|"+faint.Render("  pauley left") && strings.Join(notes, "|") != faint.Render("  pauley left")+"|"+faint.Render("  rook is now dixie") {
+	if strings.Join(notes, "|") != "rook is now dixie|pauley left" {
 		t.Errorf("notes %q", notes)
 	}
 	if c.room["w1:p2"].Name != "dixie" || c.names["dixie"] != "w1:p2" {
@@ -200,7 +200,7 @@ func TestKick(t *testing.T) {
 		return nil
 	}
 	c.route(message{human, "", "@rook why?"})
-	if note := c.kick("rook"); note != "  rook left the room" {
+	if note := c.kick("rook"); note != "rook left the room" {
 		t.Errorf("note %q", note)
 	}
 	sent := []string{<-got, <-got}

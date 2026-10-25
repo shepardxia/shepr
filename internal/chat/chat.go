@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"os/user"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -97,15 +97,22 @@ func (t terminal) Fd() uintptr                 { return t.tty.Fd() }
 
 type (
 	printMsg  string   // a line to print above the input box
+	noteMsg   string   // a note on the room, printed faint
 	rosterMsg struct{} // the room changed
 )
 
-// print shows lines above the input box. It blocks until the program takes
-// them, so it never runs under mu.
-func (c *chat) print(lines ...string) {
-	for _, l := range lines {
+// print shows a line above the input box. It blocks until the program takes
+// it, so it never runs under mu; nor does note.
+func (c *chat) print(line string) {
+	if c.p != nil {
+		c.p.Send(printMsg(line))
+	}
+}
+
+func (c *chat) note(notes ...string) {
+	for _, n := range notes {
 		if c.p != nil {
-			c.p.Send(printMsg(l))
+			c.p.Send(noteMsg(n))
 		}
 	}
 }
@@ -124,13 +131,34 @@ func (c *chat) pokeWatch() {
 	}
 }
 
+// act runs f under mu, queues the deliveries it returns, then prints its
+// notes and redraws.
+func (c *chat) act(f func() ([]delivery, []string)) {
+	c.mu.Lock()
+	out, notes := f()
+	c.send(out)
+	c.mu.Unlock()
+	c.note(notes...)
+	c.redraw()
+}
+
+// agent is the live agent in pane. c.mu is held.
+func (c *chat) agent(pane string) (herdr.Agent, bool) {
+	for _, a := range c.live {
+		if a.PaneID == pane {
+			return a, true
+		}
+	}
+	return herdr.Agent{}, false
+}
+
 // members is the room in pane order. c.mu is held.
 func (c *chat) members() []herdr.Agent {
 	ms := make([]herdr.Agent, 0, len(c.room))
 	for _, a := range c.room {
 		ms = append(ms, a)
 	}
-	sort.Slice(ms, func(i, j int) bool { return ms[i].PaneID < ms[j].PaneID })
+	slices.SortFunc(ms, func(a, b herdr.Agent) int { return strings.Compare(a.PaneID, b.PaneID) })
 	return ms
 }
 

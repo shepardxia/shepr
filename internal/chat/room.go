@@ -20,19 +20,19 @@ func (c *chat) watch() {
 	tick := time.NewTicker(pollGap)
 	for {
 		if all, err := herdr.Agents(); err == nil {
-			c.mu.Lock()
-			joining, out, notes := c.update(all)
-			c.send(out)
-			c.mu.Unlock()
-			c.print(notes...)
+			var joining []herdr.Agent
+			c.act(func() (out []delivery, notes []string) {
+				joining, out, notes = c.update(all)
+				return out, notes
+			})
 			for _, a := range joining {
-				if err := c.join(a, last[a.PaneID], all); err == nil {
+				if name, err := c.join(a, last[a.PaneID], all); err == nil {
 					verb := " joined"
 					if joined[a.PaneID] {
 						verb = " is back"
 					}
 					joined[a.PaneID] = true
-					c.print(faint.Render("  " + c.handle(a.PaneID) + verb))
+					c.note(name + verb)
 				}
 			}
 			for _, a := range all {
@@ -71,20 +71,20 @@ func (c *chat) update(all []herdr.Agent) (joining []herdr.Agent, out []delivery,
 	want := func(a herdr.Agent) bool {
 		return a.PaneID != c.self && !c.kicked[a.PaneID] && (a.TabID == c.tab || c.invited[a.PaneID])
 	}
-	for pane, m := range c.room {
-		a, ok := byPane[pane]
+	for _, m := range c.members() {
+		a, ok := byPane[m.PaneID]
 		switch {
 		case !ok || !want(a):
-			delete(c.room, pane)
-			notes = append(notes, faint.Render("  "+m.Handle()+" left"))
+			delete(c.room, m.PaneID)
+			notes = append(notes, m.Handle()+" left")
 		case a.Name == "":
-			delete(c.room, pane)
+			delete(c.room, m.PaneID)
 		default:
 			if a.Name != m.Name {
-				notes = append(notes, faint.Render("  "+m.Handle()+" is now "+a.Name))
-				c.names[a.Name] = pane
+				notes = append(notes, m.Handle()+" is now "+a.Name)
+				c.names[a.Name] = m.PaneID
 			}
-			c.room[pane] = a
+			c.room[m.PaneID] = a
 		}
 	}
 	for _, b := range c.boxes {
@@ -101,29 +101,29 @@ func (c *chat) update(all []herdr.Agent) (joining []herdr.Agent, out []delivery,
 	return joining, out, append(notes, settled...)
 }
 
-// join names an agent if herdr has not, makes it a member, and welcomes it
-// with a recap of the chat so far. An unnamed agent first gets back last, the
-// name its pane last held, or else a placeholder herdr name, so the welcome's
-// rename command can name it rather than its pane id.
-func (c *chat) join(a herdr.Agent, last string, all []herdr.Agent) error {
+// join names an agent if herdr has not, makes it a member, welcomes it with a
+// recap of the chat so far, and returns its name. An unnamed agent first gets
+// back last, the name its pane last held, or else a placeholder herdr name, so
+// the welcome's rename command can name it rather than its pane id.
+func (c *chat) join(a herdr.Agent, last string, all []herdr.Agent) (string, error) {
 	if a.Name == "" && last != "" && herdr.Rename(a.PaneID, last) == nil {
 		a.Name = last
 	}
 	if a.Name == "" {
 		a.Name = freeName(a.Kind, takenNames(all))
 		if err := herdr.Rename(a.PaneID, a.Name); err != nil {
-			return err
+			return "", err
 		}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.kicked[a.PaneID] {
-		return errors.New("removed while joining")
+		return "", errors.New("removed while joining")
 	}
 	c.room[a.PaneID] = a
 	c.names[a.Name] = a.PaneID
 	c.box(a.PaneID).reset(welcomeFor(a.Name, c.self, c.history))
-	return nil
+	return a.Name, nil
 }
 
 func takenNames(all []herdr.Agent) map[string]bool {
@@ -132,13 +132,6 @@ func takenNames(all []herdr.Agent) map[string]bool {
 		taken[a.Name] = true
 	}
 	return taken
-}
-
-// handle is the name the member in pane goes by.
-func (c *chat) handle(pane string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.room[pane].Handle()
 }
 
 // add brings arg into the room: a live agent outside it by name, or else a
@@ -155,15 +148,15 @@ func (c *chat) add(arg string) string {
 		}
 		c.mu.Unlock()
 		c.pokeWatch()
-		return "  adding " + arg
+		return "adding " + arg
 	}
 	taken := takenNames(c.live)
 	c.mu.Unlock()
 	if err := c.spawn(arg, taken); err != nil {
-		return "  could not start " + arg + ": " + err.Error()
+		return "could not start " + arg + ": " + err.Error()
 	}
 	c.pokeWatch()
-	return "  started " + arg + "; it joins once it is ready"
+	return "started " + arg + "; it joins once it is ready"
 }
 
 // spawn starts an agent of kind in a new pane beside the largest pane of the
@@ -218,45 +211,41 @@ func (c *chat) spawn(kind string, taken map[string]bool) error {
 // kick takes the member that goes by name out of the room and tells it so.
 // It stays in its pane, and add brings it back.
 func (c *chat) kick(name string) string {
-	c.mu.Lock()
-	pane := ""
-	for p, a := range c.room {
-		if a.Handle() == name {
-			pane = p
+	found := false
+	c.act(func() ([]delivery, []string) {
+		for pane, a := range c.room {
+			if a.Handle() != name {
+				continue
+			}
+			found = true
+			delete(c.room, pane)
+			if c.invited[pane] {
+				delete(c.invited, pane)
+			} else {
+				c.kicked[pane] = true
+			}
+			c.box(pane).reset(fmt.Sprintf(leaveText, human, c.self))
 		}
+		return c.settle()
+	})
+	if !found {
+		return "no one in the room goes by " + name
 	}
-	if pane == "" {
-		c.mu.Unlock()
-		return "  no one in the room goes by " + name
-	}
-	delete(c.room, pane)
-	if c.invited[pane] {
-		delete(c.invited, pane)
-	} else {
-		c.kicked[pane] = true
-	}
-	c.box(pane).reset(fmt.Sprintf(leaveText, human, c.self))
-	out, notes := c.settle()
-	c.send(out)
-	c.mu.Unlock()
-	c.print(notes...)
-	c.redraw()
-	return "  " + name + " left the room"
+	return name + " left the room"
 }
 
 // releaseAll sends every held message on now.
 func (c *chat) releaseAll() string {
-	c.mu.Lock()
-	n := len(c.holds)
-	for _, h := range c.holds {
-		clear(h.waiting)
-	}
-	out, _ := c.settle()
-	c.send(out)
-	c.mu.Unlock()
-	c.redraw()
+	n := 0
+	c.act(func() ([]delivery, []string) {
+		n = len(c.holds)
+		for _, h := range c.holds {
+			clear(h.waiting)
+		}
+		return c.settle()
+	})
 	if n == 0 {
-		return "  nothing is held"
+		return "nothing is held"
 	}
-	return fmt.Sprintf("  sent %d held message(s) to everyone", n)
+	return fmt.Sprintf("sent %d held message(s) to everyone", n)
 }

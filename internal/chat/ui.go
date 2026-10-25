@@ -3,7 +3,7 @@ package chat
 import (
 	"fmt"
 	"hash/fnv"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -34,17 +34,21 @@ func init() {
 }
 
 func helpText() string {
-	var lines []string
+	rows := [][2]string{}
 	for _, cmd := range commands {
-		lines = append(lines, fmt.Sprintf("  %-22s %s", "/"+strings.TrimSpace(cmd.name+" "+cmd.args), cmd.help))
+		rows = append(rows, [2]string{"/" + strings.TrimSpace(cmd.name+" "+cmd.args), cmd.help})
 	}
-	lines = append(lines,
-		fmt.Sprintf("  %-22s %s", "@name", "send to that agent first; the rest get it with its reply"),
-		fmt.Sprintf("  %-22s %s", "tab", "complete a name or command"),
-		fmt.Sprintf("  %-22s %s", "up / down", "recall sent messages"),
-		fmt.Sprintf("  %-22s %s", "alt+enter", "new line"),
-		fmt.Sprintf("  %-22s %s", "//text", "send text that starts with /"))
-	return faint.Render(strings.Join(lines, "\n"))
+	rows = append(rows,
+		[2]string{"@name", "send to that agent first; the rest get it with its reply"},
+		[2]string{"tab", "complete a name or command"},
+		[2]string{"up / down", "recall sent messages"},
+		[2]string{"alt+enter", "new line"},
+		[2]string{"//text", "send text that starts with /"})
+	lines := make([]string, len(rows))
+	for i, r := range rows {
+		lines[i] = fmt.Sprintf("%-20s %s", r[0], r[1])
+	}
+	return strings.Join(lines, "\n")
 }
 
 // memberNames is the members' names.
@@ -72,8 +76,8 @@ func (c *chat) addable() []string {
 			kinds = append(kinds, a.Kind)
 		}
 	}
-	sort.Strings(names)
-	sort.Strings(kinds)
+	slices.Sort(names)
+	slices.Sort(kinds)
 	return append(names, kinds...)
 }
 
@@ -114,9 +118,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case printMsg:
 		return m, m.println(string(msg))
+	case noteMsg:
+		return m, m.println(noteLine(string(msg)))
 	case doneMsg:
 		m.pending = ""
-		return m, m.println(string(msg))
+		return m, m.println(noteLine(string(msg)))
 	case rosterMsg:
 		return m, nil
 	case tea.WindowSizeMsg:
@@ -177,6 +183,11 @@ func (m model) println(text string) tea.Cmd {
 	return tea.Println(text)
 }
 
+// noteLine is a note as printed: faint, each line indented.
+func noteLine(text string) string {
+	return faint.Render("  " + strings.ReplaceAll(text, "\n", "\n  "))
+}
+
 // submit sends the input box as a message, or runs it as a command.
 func (m model) submit() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.input.Value())
@@ -199,14 +210,14 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 			continue
 		}
 		if cmd.args != "" && arg == "" {
-			return m, m.println(faint.Render("  usage: /" + cmd.name + " " + cmd.args))
+			return m, m.println(noteLine("usage: /" + cmd.name + " " + cmd.args))
 		}
 		m.input.Reset()
 		m.pending = "/" + strings.TrimSpace(name+" "+arg) + " …"
 		c := m.c
 		return m, func() tea.Msg { return doneMsg(cmd.run(c, arg)) }
 	}
-	return m, m.println(faint.Render("  no command /" + name + "; /help lists them"))
+	return m, m.println(noteLine("no command /" + name + "; /help lists them"))
 }
 
 func (m model) View() tea.View {
@@ -279,9 +290,15 @@ func suggestLine(c completion) string {
 	}
 	parts := make([]string, len(c.options))
 	for i, o := range c.options {
-		parts[i] = faint.Render(strings.TrimSpace(o + " " + c.blurb[o]))
+		blurb := ""
+		if b := c.blurb[o]; b != "" {
+			blurb = " " + b
+		}
+		parts[i] = faint.Render(o + blurb)
+		if i == 0 {
+			parts[i] = lipgloss.NewStyle().Bold(true).Render(o) + faint.Render(blurb+" ⇥")
+		}
 	}
-	parts[0] = lipgloss.NewStyle().Bold(true).Render(c.options[0]) + faint.Render(strings.TrimRight(" "+c.blurb[c.options[0]], " ")+" ⇥")
 	return strings.Join(parts, "  ")
 }
 
@@ -346,8 +363,8 @@ func (m model) statusLine() string {
 		}
 	}
 	if len(waiting) > 0 {
-		sort.Strings(waiting)
-		line += faint.Render("   ⏸ held for " + strings.Join(dedup(waiting), ", ") + " · /release")
+		slices.Sort(waiting)
+		line += faint.Render("   ⏸ held for " + strings.Join(slices.Compact(waiting), ", ") + " · /release")
 	}
 	return line
 }
@@ -362,15 +379,4 @@ func dot(a herdr.Agent) string {
 		return "○"
 	}
 	return "·"
-}
-
-// dedup drops repeats from a sorted list.
-func dedup(s []string) []string {
-	var out []string
-	for i, v := range s {
-		if i == 0 || v != s[i-1] {
-			out = append(out, v)
-		}
-	}
-	return out
 }

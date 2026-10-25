@@ -1,7 +1,9 @@
 package chat
 
 import (
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,7 +37,7 @@ func (c *chat) deliver() {
 		kicked := c.kicked[msg.pane]
 		c.mu.Unlock()
 		if kicked {
-			c.print(faint.Render("  dropped a post from " + msg.author + ", who is not in the room"))
+			c.note("dropped a post from " + msg.author + ", who is not in the room")
 			continue
 		}
 		c.print("\n" + byline(msg.author) + "\n" + c.highlight(msg.text))
@@ -47,12 +49,7 @@ func (c *chat) deliver() {
 				c.mu.Unlock()
 			}
 		}
-		c.mu.Lock()
-		out, notes := c.route(msg)
-		c.send(out)
-		c.mu.Unlock()
-		c.print(notes...)
-		c.redraw()
+		c.act(func() ([]delivery, []string) { return c.route(msg) })
 	}
 }
 
@@ -87,7 +84,7 @@ func (c *chat) route(msg message) ([]delivery, []string) {
 		out = append(out, delivery{pane, msg.String()})
 	}
 	c.holds = append(c.holds, h)
-	return out, append(notes, faint.Render("  the rest wait for "+strings.Join(names, ", ")))
+	return out, append(notes, "the rest wait for "+strings.Join(names, ", "))
 }
 
 // settle releases each hold no member is waiting on any more: a mentioned
@@ -97,14 +94,14 @@ func (c *chat) settle() ([]delivery, []string) {
 	var notes []string
 	var due, kept []*held
 	for _, h := range c.holds {
-		for pane, asked := range h.waiting {
+		for _, pane := range slices.Sorted(maps.Keys(h.waiting)) {
 			a, in := c.room[pane]
 			switch {
 			case !in:
 				delete(h.waiting, pane)
-			case c.lastTurn(pane) > asked && (a.Status == "idle" || a.Status == "done"):
+			case c.lastTurn(pane) > h.waiting[pane] && (a.Status == "idle" || a.Status == "done"):
 				delete(h.waiting, pane)
-				notes = append(notes, faint.Render("  "+a.Handle()+" finished without replying"))
+				notes = append(notes, a.Handle()+" finished without replying")
 			}
 		}
 		if len(h.waiting) == 0 {
@@ -123,12 +120,8 @@ func (c *chat) settle() ([]delivery, []string) {
 // lastTurn is where the live agent in pane finished its latest turn. c.mu is
 // held.
 func (c *chat) lastTurn(pane string) uint64 {
-	for _, a := range c.live {
-		if a.PaneID == pane {
-			return a.LastTurn
-		}
-	}
-	return 0
+	a, _ := c.agent(pane)
+	return a.LastTurn
 }
 
 // release gives every member what it has not seen of holds and adds them to
@@ -145,7 +138,7 @@ func (c *chat) release(holds ...*held) []delivery {
 		}
 	}
 	if n := len(c.history); n > historySize {
-		c.history = append([]message(nil), c.history[n-historySize:]...)
+		c.history = slices.Clone(c.history[n-historySize:])
 	}
 	return c.unseenBy(holds...)
 }
@@ -250,10 +243,7 @@ func (c *chat) drain(pane string, b *outbox) {
 	for {
 		c.mu.Lock()
 		_, in := c.room[pane]
-		live := false
-		for _, a := range c.live {
-			live = live || a.PaneID == pane
-		}
+		_, live := c.agent(pane)
 		if !live || (!in && len(b.pending) == 0) {
 			delete(c.boxes, pane)
 			c.mu.Unlock()
@@ -291,8 +281,8 @@ func (c *chat) drain(pane string, b *outbox) {
 	}
 }
 
-// queued is how many messages wait for each member herdr keeps refusing, and
-// why. c.mu is held.
+// queued is how many messages wait for pane while herdr keeps refusing them,
+// and why. c.mu is held.
 func (c *chat) queued(pane string) (int, string) {
 	if b := c.boxes[pane]; b != nil && b.stuck != "" {
 		return len(b.pending), b.stuck
