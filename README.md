@@ -25,7 +25,9 @@ message every agent in the tab; their replies show up in the chat.
 
 Put `@name` in a message to send it only to that agent. Its reply appears in the
 chat without being forwarded to the others. Tab completes names and commands;
-up and down recall what you sent. Shift+Enter adds a new line; Enter sends.
+up and down move through the input, recalling sent messages only at its first
+or last line. Shift+Enter adds a new line; Enter sends. Select text normally in
+herdr; Page Up and Page Down scroll the chat.
 
 - `/add codex` starts a new codex in this tab; `/add rook` brings in a live agent from anywhere.
 - `/kick rook` takes rook out of the room; it keeps running and `/add rook` brings it back.

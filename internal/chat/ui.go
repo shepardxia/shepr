@@ -41,8 +41,8 @@ func helpText() string {
 	rows = append(rows,
 		[2]string{"@name", "send only to that agent; its reply stays in the chat"},
 		[2]string{"tab", "complete a name or command"},
-		[2]string{"up / down", "recall sent messages"},
-		[2]string{"pgup / pgdn", "scroll the chat; so does the mouse wheel"},
+		[2]string{"up / down", "move through input; recall sent messages at its first / last line"},
+		[2]string{"pgup / pgdn", "scroll the chat"},
 		[2]string{"shift+enter", "new line (also alt+enter or ctrl+j)"},
 		[2]string{"//text", "send text that starts with /"})
 	lines := make([]string, len(rows))
@@ -178,9 +178,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
-	case tea.MouseWheelMsg:
-		m.history, _ = m.history.Update(msg)
-		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "pgup", "pgdown":
@@ -206,7 +203,9 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 		case "up":
-			if m.input.Line() == 0 && m.recall > 0 {
+			// Line counts explicit newlines; RowOffset also accounts for
+			// wrapping, so a long paragraph still gets normal cursor movement.
+			if m.input.Line() == 0 && m.input.LineInfo().RowOffset == 0 && m.recall > 0 {
 				if m.recall == len(m.sent) {
 					m.draft = m.input.Value()
 				}
@@ -215,7 +214,8 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 				return m, nil
 			}
 		case "down":
-			if m.input.Line() == m.input.LineCount()-1 && m.recall < len(m.sent) {
+			line := m.input.LineInfo()
+			if m.input.Line() == m.input.LineCount()-1 && line.RowOffset == line.Height-1 && m.recall < len(m.sent) {
 				m.recall++
 				if m.recall == len(m.sent) {
 					m.input.SetValue(m.draft)
@@ -342,7 +342,7 @@ func (m model) View() tea.View {
 		}
 	}
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	// Leave mouse input to herdr for native text selection.
 	return v
 }
 
