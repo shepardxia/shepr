@@ -2,15 +2,12 @@ package chat
 
 import (
 	"fmt"
-	"hash/fnv"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -44,7 +41,7 @@ func helpText() string {
 		[2]string{"@name", "send only to that agent; its reply stays in the chat"},
 		[2]string{"tab", "complete a name or command"},
 		[2]string{"up / down", "move through input; recall sent messages at its first / last line"},
-		[2]string{"pgup / pgdn", "scroll the chat"},
+		[2]string{"wheel / pgup / pgdn", "scroll the chat"},
 		[2]string{"shift+enter", "new line (also alt+enter or ctrl+j)"},
 		[2]string{"//text", "send text that starts with /"})
 	lines := make([]string, len(rows))
@@ -92,7 +89,7 @@ func (c *chat) render(msg message, width int) string {
 		}
 		return strings.Join(lines, "\n")
 	}
-	head := nameStyle(msg.author, msg.pane).Render(msg.author) + "  " + faint.Render(msg.at.Format("15:04"))
+	head := c.nameStyle(msg.author, msg.pane).Render(msg.author) + "  " + faint.Render(msg.at.Format("15:04"))
 	return "\n" + lipgloss.Wrap(head, width, "") + "\n" + lipgloss.Wrap(c.highlight(msg.text), width, "")
 }
 
@@ -109,15 +106,16 @@ func plainText(text string) string {
 }
 
 type model struct {
-	c       *chat
-	width   int
-	height  int
-	history viewport.Model // a wrapped, scrollable view of the transcript
-	input   textarea.Model
-	sent    []string // what the human sent, oldest first
-	recall  int      // index into sent while recalling, len(sent) otherwise
-	draft   string   // the unsent text recalling set aside
-	pending string   // a command under way, shown until its result arrives
+	c        *chat
+	width    int
+	height   int
+	input    textarea.Model
+	sent     []string // what the human sent, oldest first
+	recall   int      // index into sent while recalling, len(sent) otherwise
+	draft    string   // the unsent text recalling set aside
+	printed  uint64
+	printing bool
+	pending  string // a command under way, shown until its result arrives
 }
 
 // doneMsg is a command's result.
@@ -139,25 +137,38 @@ func newModel(c *chat) model {
 	in.SetStyles(styles)
 	in.SetVirtualCursor(false)
 	in.Focus()
-	history := viewport.New()
-	history.KeyMap = viewport.KeyMap{
-		PageUp:   key.NewBinding(key.WithKeys("pgup")),
-		PageDown: key.NewBinding(key.WithKeys("pgdown")),
-	}
-	return model{c: c, input: in, history: history}
+	return model{c: c, input: in}
 }
 
 func (m model) Init() tea.Cmd { return pollRoster }
 
+type printedMsg struct{}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	revision := m.c.revision
 	next, cmd := m.update(msg)
-	next = next.layout(next.c.revision != revision)
-	return next, tea.Batch(append(next.c.dispatch(), cmd)...)
+	output := next.printNew()
+	return next, tea.Batch(append(next.c.dispatch(), cmd, output)...)
+}
+
+// Print one batch at a time so concurrent posts keep their transcript order.
+func (m *model) printNew() tea.Cmd {
+	if m.width < 1 || m.printing || m.printed == m.c.revision {
+		return nil
+	}
+	count := min(int(m.c.revision-m.printed), len(m.c.transcript))
+	var blocks []string
+	for _, msg := range m.c.transcript[len(m.c.transcript)-count:] {
+		blocks = append(blocks, m.c.render(msg, max(m.width-1, 1)))
+	}
+	m.printed, m.printing = m.c.revision, true
+	return tea.Sequence(tea.Println(strings.Join(blocks, "\n")), func() tea.Msg { return printedMsg{} })
 }
 
 func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case printedMsg:
+		m.printing = false
+		return m, nil
 	case message:
 		if err := m.c.receive(msg); err != nil {
 			m.c.note(err.Error())
@@ -194,12 +205,11 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.input.MaxHeight = max(1, min(8, m.height-1))
+		m.input.SetWidth(max(m.width-1, 1))
 		return m, nil
 	case tea.KeyPressMsg:
 		switch msg.String() {
-		case "pgup", "pgdown":
-			m.history, _ = m.history.Update(msg)
-			return m, nil
 		case "ctrl+c":
 			if m.input.Value() == "" {
 				return m, tea.Quit
@@ -246,51 +256,6 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
-}
-
-// layout gives the transcript what the status line and input box leave.
-func (m model) layout(refresh bool) model {
-	if m.width < 1 || m.height < 1 {
-		return m
-	}
-	// Leave the final column free to avoid terminal auto-wrap.
-	width := max(m.width-1, 1)
-	maxHeight := max(1, min(8, m.height-2))
-	if width != m.history.Width() || maxHeight != m.input.MaxHeight {
-		m.input.MaxHeight = maxHeight
-		m.input.SetWidth(width)
-	}
-	height := max(m.height-1-m.input.Height(), 0)
-	bottom := m.history.AtBottom()
-	if height != m.history.Height() || width != m.history.Width() {
-		m.history.SetWidth(width)
-		m.history.SetHeight(height)
-		refresh = true
-	}
-	if refresh {
-		return m.refill(bottom)
-	}
-	return m
-}
-
-// refill wraps the history to the width, padded so a short one sits just above
-// the input box, and keeps it at the bottom if it was there.
-func (m model) refill(bottom bool) model {
-	if m.history.Width() == 0 {
-		return m
-	}
-	var lines []string
-	for _, msg := range m.c.transcript {
-		lines = append(lines, strings.Split(m.c.render(msg, m.history.Width()), "\n")...)
-	}
-	if pad := m.history.Height() - len(lines); pad > 0 {
-		lines = append(make([]string, pad), lines...)
-	}
-	m.history.SetContentLines(lines)
-	if bottom {
-		m.history.GotoBottom()
-	}
-	return m
 }
 
 // submit sends the input box as a message, or runs it as a command.
@@ -346,24 +311,21 @@ func (m model) View() tea.View {
 		top = faint.Render(m.pending)
 	}
 	top = ansi.Truncate(top, max(m.width-1, 1), "…")
-	var parts []string
-	if m.history.Height() > 0 {
-		parts = append(parts, m.history.View())
-	}
+	input := lipgloss.NewStyle().MaxWidth(m.width).Render(m.input.View())
+	content := input
 	if m.height > 1 {
-		parts = append(parts, top)
+		content = top + "\n" + input
 	}
-	parts = append(parts, lipgloss.NewStyle().MaxWidth(m.width).Render(m.input.View()))
-	v := tea.NewView(strings.Join(parts, "\n"))
+	v := tea.NewView(content)
 	v.Cursor = m.input.Cursor()
 	if v.Cursor != nil {
-		v.Cursor.Position.Y += m.height - m.input.Height()
+		if m.height > 1 {
+			v.Cursor.Position.Y++
+		}
 		if v.Cursor.Position.X >= m.width {
 			v.Cursor = nil
 		}
 	}
-	v.AltScreen = true
-	// Leave mouse input to herdr for native text selection.
 	return v
 }
 
@@ -444,25 +406,36 @@ var faint = lipgloss.NewStyle().Faint(true)
 // palette is the members' name colors; the human's is green.
 var palette = []string{"6", "5", "3", "4", "1"}
 
-// Pane identity gives names a stable color, including after an agent leaves.
-func nameStyle(author, pane string) lipgloss.Style {
-	bold := lipgloss.NewStyle().Bold(true)
-	if pane == "" {
-		if author == human {
-			return bold.Foreground(lipgloss.Color("2"))
+func (c *chat) assignColor(pane string) {
+	used := make([]int, len(palette))
+	for p, a := range c.agents {
+		if color, known := c.colors[p]; known && a.member && p != pane {
+			used[color]++
 		}
-		return bold
 	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(pane))
-	return bold.Foreground(lipgloss.Color(palette[int(h.Sum32())%len(palette)]))
+	color, known := c.colors[pane]
+	if !known || used[color] > 0 {
+		color = slices.Index(used, slices.Min(used))
+	}
+	c.colors[pane] = color
+}
+
+func (c *chat) nameStyle(author, pane string) lipgloss.Style {
+	bold := lipgloss.NewStyle().Bold(true)
+	if pane == "" && author == human {
+		return bold.Foreground(lipgloss.Color("2"))
+	}
+	if color, ok := c.colors[pane]; ok {
+		return bold.Foreground(lipgloss.Color(palette[color]))
+	}
+	return bold
 }
 
 // highlight paints each @mention of a member in that member's color.
 func (c *chat) highlight(text string) string {
 	styles := map[string]lipgloss.Style{}
 	for _, a := range c.members() {
-		styles[a.Handle()] = nameStyle(a.Handle(), a.PaneID)
+		styles[a.Handle()] = c.nameStyle(a.Handle(), a.PaneID)
 	}
 	return mentionRe.ReplaceAllStringFunc(text, func(m string) string {
 		lead, name, _ := strings.Cut(m, "@")
@@ -483,7 +456,7 @@ func (m model) statusLine() string {
 	}
 	parts := make([]string, len(ms))
 	for i, a := range ms {
-		parts[i] = dot(a) + " " + nameStyle(a.Handle(), a.PaneID).Render(a.Handle())
+		parts[i] = dot(a) + " " + c.nameStyle(a.Handle(), a.PaneID).Render(a.Handle())
 		if state := c.agents[a.PaneID]; state.waiting != "" && len(state.pending) > 0 {
 			parts[i] += faint.Render(fmt.Sprintf(" %d queued, %s", len(state.pending), state.waiting))
 		}

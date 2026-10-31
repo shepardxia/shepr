@@ -47,6 +47,7 @@ func (c *chat) wanted(a *agent) bool {
 // syncRoster reconciles membership and releases refused deliveries for retry.
 func (c *chat) syncRoster(all []herdr.Agent) {
 	seen := map[string]bool{}
+	var joined []string
 	for _, info := range all {
 		if info.PaneID == c.self {
 			continue
@@ -76,6 +77,7 @@ func (c *chat) syncRoster(all []herdr.Agent) {
 		ready := info.Status == "idle" || info.Status == "done" || info.Status == "working"
 		if !a.member && c.wanted(a) && ready {
 			a.member = true
+			joined = append(joined, info.PaneID)
 			a.replacePending(welcomeFor(info.PaneID, c.self, c.post, c.recap()))
 			c.note(info.Handle() + " joined")
 		}
@@ -87,6 +89,9 @@ func (c *chat) syncRoster(all []herdr.Agent) {
 			}
 			delete(c.agents, pane)
 		}
+	}
+	for _, pane := range joined {
+		c.assignColor(pane)
 	}
 }
 

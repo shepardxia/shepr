@@ -99,13 +99,14 @@ func TestKickDuringDelivery(t *testing.T) {
 	}
 }
 
-func TestTranscriptLayout(t *testing.T) {
+func TestInputAndMessageLayout(t *testing.T) {
 	var m tea.Model = newModel(newChat("w1:t1", "w1:p9"))
 	text := "I’m adding the shared infobar contract now; I’ll expose its native view and a layout call."
 	m, _ = m.Update(message{author: "wren", text: text})
 	for _, width := range []int{40, 24, 60} {
 		m, _ = m.Update(tea.WindowSizeMsg{Width: width, Height: 12})
-		words := strings.Fields(ansi.Strip(m.(model).history.View()))
+		c := m.(model).c
+		words := strings.Fields(ansi.Strip(c.render(c.transcript[0], width-1)))
 		if len(words) < 2 || strings.Join(words[2:], " ") != text {
 			t.Fatalf("clipped at width %d: %v", width, words)
 		}
@@ -118,8 +119,11 @@ func TestTranscriptLayout(t *testing.T) {
 		m, _ = m.Update(event)
 		view := m.(model)
 		lines := strings.Split(ansi.Strip(view.View().Content), "\n")
-		if len(lines) != view.height || !view.history.AtBottom() {
-			t.Fatal("transcript lost its position after input/resize")
+		if len(lines) > view.height {
+			t.Fatal("input exceeds pane height")
+		}
+		if view.View().AltScreen {
+			t.Fatal("alternate screen turns native scrolling into input keys")
 		}
 		for _, line := range lines {
 			if ansi.StringWidth(line) > view.width {

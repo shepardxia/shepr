@@ -51,13 +51,14 @@ const (
 type chat struct {
 	tab, self, post string
 	agents          map[string]*agent
+	colors          map[string]int
 	transcript      []message
 	revision        uint64
 	prompt          func(pane, text string) error
 }
 
 func newChat(tab, self string) *chat {
-	return &chat{tab: tab, self: self, agents: map[string]*agent{}, prompt: herdr.Prompt}
+	return &chat{tab: tab, self: self, agents: map[string]*agent{}, colors: map[string]int{}, prompt: herdr.Prompt}
 }
 
 func Run() error {
