@@ -17,8 +17,8 @@ Messages show up as "name: message". To post:
 %s "<message>"
 
 Use this command to post; do not type into the chat pane. Your pane identifies you.
-An @name message goes only to that agent. When asked to reply locally, add --local
-before your message: it appears in the chat without prompting anyone else.
+An @name message goes only to that agent. Reply to it with --local before your
+message: your reply appears in the chat without prompting anyone else.
 
 The others never see this terminal, so answer in the chat and don't repeat yourself here. You don't have to answer everything; post when you have something to add.
 

@@ -33,9 +33,6 @@ func (c *chat) receive(msg message) error {
 	}
 	c.record(msg)
 	text := msg.String()
-	if msg.audience == directAudience {
-		text += "\n\nReply in the chat only: " + c.post + " --local \"<reply>\". Do not broadcast this exchange."
-	}
 	for pane, a := range c.agents {
 		if a.member && pane != msg.pane && (msg.audience == roomAudience || names[a.info.Handle()]) {
 			a.pending = append(a.pending, text)
