@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // Posts travel separately from terminal input, one JSON message per connection.
@@ -15,6 +17,11 @@ type post struct {
 	Pane  string `json:"pane"`
 	Text  string `json:"text"`
 	Local bool   `json:"local"`
+}
+
+type postMsg struct {
+	post  post
+	reply chan string
 }
 
 // Post sends an agent's message to a running chat. --local displays a reply
@@ -51,36 +58,36 @@ func Post(args []string) error {
 	return nil
 }
 
-func (c *chat) listenPosts() (func(), error) {
+func listenPosts(send func(tea.Msg), done <-chan struct{}) (string, func(), error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	dir, err := os.MkdirTemp("", "shepr-")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	addr := filepath.Join(dir, "chat.sock")
 	listener, err := net.Listen("unix", addr)
 	if err != nil {
 		os.RemoveAll(dir)
-		return nil, err
+		return "", nil, err
 	}
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-	c.post = quote(exe) + " post " + quote(addr)
+	command := quote(exe) + " post " + quote(addr)
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			go c.readPost(conn)
+			go readPost(conn, send, done)
 		}
 	}()
-	return func() { listener.Close(); os.RemoveAll(dir) }, nil
+	return command, func() { listener.Close(); os.RemoveAll(dir) }, nil
 }
 
-func (c *chat) readPost(conn net.Conn) {
+func readPost(conn net.Conn, send func(tea.Msg), done <-chan struct{}) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	var p post
@@ -88,13 +95,14 @@ func (c *chat) readPost(conn net.Conn) {
 	if err := json.NewDecoder(conn).Decode(&p); err != nil {
 		problem = err.Error()
 	} else {
-		c.mu.Lock()
-		_, in := c.room[p.Pane]
-		c.mu.Unlock()
-		if !in {
-			problem = "your agent is not in this room"
-		} else {
-			c.p.Send(message{pane: p.Pane, text: p.Text, local: p.Local})
+		reply := make(chan string, 1)
+		send(postMsg{p, reply})
+		select {
+		case problem = <-reply:
+		case <-done:
+			return
+		case <-time.After(5 * time.Second):
+			problem = "chat did not acknowledge the post"
 		}
 	}
 	_ = json.NewEncoder(conn).Encode(problem)

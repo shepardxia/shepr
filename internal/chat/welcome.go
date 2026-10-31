@@ -7,7 +7,7 @@ import (
 )
 
 // welcomeText is an agent's first message from the chat. Its arguments are the
-// human, the chat pane, the agent's herdr name, and the post command.
+// human, the chat pane, the agent's pane, and the post command.
 const welcomeText = `Hey, welcome to the group chat! %s set it up in the shepr chat pane (%s).
 
 First, pick a name, one lowercase word under 10 letters:
@@ -28,10 +28,9 @@ House rule: keep it short and to the point, like texting a reliable colleague.`
 // the human and the chat pane.
 const leaveText = `%s removed you from the group chat in the shepr chat pane (%s). Stop posting there; its messages no longer reach you, and you'll be welcomed back if you're added again.`
 
-// welcomeFor is the welcome for the agent named name, followed by a recap of
-// history, the latest messages of the chat.
-func welcomeFor(name, chatPane, postCommand string, history []message) string {
-	text := fmt.Sprintf(welcomeText, human, chatPane, name, postCommand)
+// welcomeFor addresses the agent by pane so it can choose its own name.
+func welcomeFor(agentPane, chatPane, postCommand string, history []message) string {
+	text := fmt.Sprintf(welcomeText, human, chatPane, agentPane, postCommand)
 	if len(history) == 0 {
 		return text
 	}

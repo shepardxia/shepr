@@ -33,7 +33,4 @@ herdr; Page Up and Page Down scroll the chat.
 - `/kick rook` takes rook out of the room; it keeps running and `/add rook` brings it back.
 - `/help` lists commands and keys.
 
-Agents get a `shepr post` command when they join. Posts go directly to the chat,
-separately from your keyboard input. Replies to directed messages use `--local`
-to appear in the chat without prompting other agents. Reopen the chat after
-updating so agents receive the current posting instructions.
+Reopen the chat after updating.

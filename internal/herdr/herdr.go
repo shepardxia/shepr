@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,10 @@ func Call(method string, params any) (json.RawMessage, error) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-	req, _ := json.Marshal(map[string]any{"id": "shepr", "method": method, "params": params})
+	req, err := json.Marshal(map[string]any{"id": "shepr", "method": method, "params": params})
+	if err != nil {
+		return nil, err
+	}
 	if _, err := conn.Write(append(req, '\n')); err != nil {
 		return nil, err
 	}
@@ -73,12 +77,12 @@ type Agent struct {
 	TabID  string `json:"tab_id"`
 }
 
-// Handle is how an agent appears in the chat: its herdr name, else its kind.
+// Handle uses a unique pane-based fallback until the agent chooses a name.
 func (a Agent) Handle() string {
 	if a.Name != "" {
 		return a.Name
 	}
-	return a.Kind
+	return a.Kind + "-" + strings.ReplaceAll(a.PaneID, ":", "-")
 }
 
 // get calls method and decodes its result into out.
@@ -162,23 +166,14 @@ func ClosePane(pane string) error {
 }
 
 // Start launches an agent of kind under name in pane, a shell at its prompt.
-// herdr checks kind before pane, so an unsupported kind fails on any pane.
 func Start(name, kind, pane string) error {
 	_, err := Call("agent.start", map[string]any{"name": name, "kind": kind, "pane_id": pane})
 	return err
 }
 
-// Prompt submits text and Enter to the agent in pane and waits until the
-// agent takes it up. It fails with agent_prompt_stalled when the agent shows
-// no activity, as when input reaches an agent that is still starting.
+// Prompt waits for herdr to submit text and Enter. Agent activity detection is
+// not a delivery acknowledgment: a quiet agent may already have the prompt.
 func Prompt(pane, text string) error {
-	wait := map[string]any{"until": []string{"working", "blocked"}, "timeout_ms": 20000}
-	_, err := Call("agent.prompt", map[string]any{"target": pane, "text": text, "wait": wait})
-	return err
-}
-
-// Rename sets the herdr name of the agent in pane.
-func Rename(pane, name string) error {
-	_, err := Call("agent.rename", map[string]any{"target": pane, "name": name})
+	_, err := Call("agent.prompt", map[string]any{"target": pane, "text": text})
 	return err
 }
