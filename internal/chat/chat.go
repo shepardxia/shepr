@@ -49,12 +49,12 @@ const (
 // chat is owned entirely by the Bubble Tea loop. Commands perform I/O using
 // captured arguments and return results; they never read or change this state.
 type chat struct {
-	tab, self, post string
-	agents          map[string]*agent
-	colors          map[string]int
-	transcript      []message
-	revision        uint64
-	prompt          func(pane, text string) error
+	tab, self  string
+	agents     map[string]*agent
+	colors     map[string]int
+	transcript []message
+	revision   uint64
+	prompt     func(pane, text string) error
 }
 
 func newChat(tab, self string) *chat {
@@ -68,11 +68,10 @@ func Run() error {
 	}
 	p := tea.NewProgram(newModel(c))
 	done := make(chan struct{})
-	post, closePosts, err := listenPosts(p.Send, done)
+	closePosts, err := listenPosts(p.Send, done)
 	if err != nil {
 		return err
 	}
-	c.post = post
 	defer closePosts()
 	defer close(done)
 	_, err = p.Run()

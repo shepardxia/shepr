@@ -21,12 +21,13 @@ const (
 // agent holds the last roster snapshot and this room's decisions for one pane.
 // It disappears when the pane's agent does; outstanding results then go stale.
 type agent struct {
-	info       herdr.Agent
-	membership membership
-	member     bool
-	pending    []string
-	sending    *attempt
-	waiting    string
+	info         herdr.Agent
+	membership   membership
+	member       bool
+	pending      []string
+	sending      *attempt
+	waiting      string
+	localReplies bool
 }
 
 type pollMsg struct{}
@@ -78,7 +79,7 @@ func (c *chat) syncRoster(all []herdr.Agent) {
 		if !a.member && c.wanted(a) && ready {
 			a.member = true
 			joined = append(joined, info.PaneID)
-			a.replacePending(welcomeFor(info.PaneID, c.self, c.post, c.recap()))
+			a.replacePending(welcomeFor(info.PaneID, c.self, c.recap()))
 			c.note(info.Handle() + " joined")
 		}
 	}

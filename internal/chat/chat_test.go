@@ -26,8 +26,9 @@ func TestPrivateExchange(t *testing.T) {
 	c.prompt = func(pane, _ string) error { targets = append(targets, pane); return nil }
 	for _, msg := range []message{
 		{author: human, text: "@rook question"},
-		{pane: "w1:p2", text: "answer", audience: localAudience},
 		{pane: "w1:p3", text: "room message"},
+		{pane: "w1:p2", text: "answer"},
+		{pane: "w1:p2", text: "follow-up mentions @pauley"},
 	} {
 		if err := c.receive(msg); err != nil {
 			t.Fatal(err)
@@ -41,6 +42,17 @@ func TestPrivateExchange(t *testing.T) {
 	}
 	if recap := c.recap(); len(recap) != 1 || recap[0].text != "room message" {
 		t.Fatalf("private exchange leaked into newcomer recap: %v", recap)
+	}
+	for _, msg := range []message{{author: human, text: "back to the room"}, {pane: "w1:p2", text: "room reply"}} {
+		if err := c.receive(msg); err != nil {
+			t.Fatal(err)
+		}
+		for _, cmd := range c.dispatch() {
+			c.delivered(cmd().(deliveredMsg))
+		}
+	}
+	if len(targets) != 5 || targets[4] != "w1:p3" || len(c.recap()) != 3 {
+		t.Fatal("addressing the room did not restore shared replies")
 	}
 }
 

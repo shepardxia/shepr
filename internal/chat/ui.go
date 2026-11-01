@@ -175,19 +175,16 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case postMsg:
-		problem := "your agent is not in this room"
-		if msg.post.Pane != "" {
-			incoming := message{pane: msg.post.Pane, text: msg.post.Text}
-			if msg.post.Local {
-				incoming.audience = localAudience
-			}
-			if err := m.c.receive(incoming); err != nil {
-				problem = err.Error()
-			} else {
-				problem = ""
+		a := m.c.agents[msg.post.Pane]
+		reply := postReply{Member: a != nil && a.member}
+		if msg.post.Text != "" {
+			if !reply.Member {
+				reply.Error = "your agent is not in this room"
+			} else if err := m.c.receive(message{pane: msg.post.Pane, text: msg.post.Text}); err != nil {
+				reply.Error = err.Error()
 			}
 		}
-		msg.reply <- problem
+		msg.reply <- reply
 		return m, nil
 	case pollMsg:
 		return m, pollRoster

@@ -23,6 +23,9 @@ func (c *chat) receive(msg message) error {
 			return errors.New("your agent is not in this room")
 		}
 		msg.author = a.info.Handle()
+		if a.localReplies {
+			msg.audience = localAudience
+		}
 	}
 	names := map[string]bool{}
 	if msg.audience != localAudience {
@@ -35,6 +38,10 @@ func (c *chat) receive(msg message) error {
 	text := msg.String()
 	for pane, a := range c.agents {
 		if a.member && pane != msg.pane && (msg.audience == roomAudience || names[a.info.Handle()]) {
+			// A directed exchange stays local until the human addresses the room.
+			if msg.pane == "" || msg.audience == directAudience {
+				a.localReplies = msg.audience == directAudience
+			}
 			a.pending = append(a.pending, text)
 		}
 	}
@@ -57,7 +64,7 @@ type deliveredMsg struct {
 }
 
 func (a *agent) replacePending(text string) {
-	a.pending, a.waiting = nil, ""
+	a.pending, a.waiting, a.localReplies = nil, "", false
 	if text != "" {
 		a.pending = []string{text}
 	}
