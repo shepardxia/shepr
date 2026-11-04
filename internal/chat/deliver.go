@@ -22,7 +22,9 @@ func (c *chat) receive(msg message) error {
 		if a == nil || !a.member {
 			return errors.New("your agent is not in this room")
 		}
-		msg.author = a.info.Handle()
+		if msg.author == "" {
+			msg.author = a.info.Handle()
+		}
 		if a.localReplies {
 			msg.audience = localAudience
 		}

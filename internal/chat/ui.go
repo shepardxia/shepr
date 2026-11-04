@@ -180,7 +180,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		if msg.post.Text != "" {
 			if !reply.Member {
 				reply.Error = "your agent is not in this room"
-			} else if err := m.c.receive(message{pane: msg.post.Pane, text: msg.post.Text}); err != nil {
+			} else if err := m.c.receive(message{pane: msg.post.Pane, author: msg.post.Name, text: msg.post.Text}); err != nil {
 				reply.Error = err.Error()
 			}
 		}

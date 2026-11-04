@@ -11,7 +11,7 @@ const welcomeText = `You're in %s's group chat (%s).
 First, pick a name, one lowercase word under 10 letters:
 herdr agent rename %s <name>
 
-Post with: shepr post "<message>"
+Post with: shepr post <name> "<message>"
 
 An @name exchange stays in chat until %s addresses the whole room again.
 

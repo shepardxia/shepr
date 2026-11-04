@@ -11,11 +11,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/shepardxia/shepr/internal/herdr"
 )
 
 // An empty Text queries membership; otherwise the request posts a message.
 type post struct {
 	Pane string `json:"pane"`
+	Name string `json:"name,omitempty"`
 	Text string `json:"text,omitempty"`
 }
 
@@ -36,10 +38,14 @@ func roomsDir() (string, error) {
 
 // Post finds the caller's room before sending the message to it once.
 func Post(args []string) error {
-	p := post{Pane: os.Getenv("HERDR_PANE_ID"), Text: strings.TrimSpace(strings.Join(args, " "))}
-	if p.Pane == "" || p.Text == "" {
-		return errors.New("usage: shepr post <message> (from an agent's herdr pane)")
+	if len(args) < 2 || strings.TrimSpace(strings.Join(args[1:], " ")) == "" {
+		return errors.New("usage: shepr post <name> <message>")
 	}
+	agent, err := herdr.GetAgent(args[0])
+	if err != nil {
+		return err
+	}
+	p := post{Pane: agent.PaneID, Name: agent.Handle(), Text: strings.TrimSpace(strings.Join(args[1:], " "))}
 	root, err := roomsDir()
 	if err != nil {
 		return err

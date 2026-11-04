@@ -103,6 +103,14 @@ func Agents() ([]Agent, error) {
 	return out.Agents, err
 }
 
+func GetAgent(name string) (Agent, error) {
+	var out struct {
+		Agent Agent `json:"agent"`
+	}
+	err := get("agent.get", map[string]any{"target": name}, &out)
+	return out.Agent, err
+}
+
 // Pane is the part of herdr's pane record shepr reads.
 type Pane struct {
 	PaneID string `json:"pane_id"`
