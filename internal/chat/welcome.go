@@ -11,11 +11,12 @@ const welcomeText = `You're in %s's group chat (%s).
 First, pick a name, one lowercase word under 10 letters:
 herdr agent rename %s <name>
 
-Post with: shepr post <name> "<message>"
+Send chat replies with: shepr post <name> "<message>"
+Read recent messages with: herdr pane read %s --lines 80
 
 An @name exchange stays in chat until %s addresses the whole room again.
 
-Your terminal's answers aren't shared. Post when you have something to add, and keep it short.`
+Post when you have something to add. Keep it short, and don't repeat chat replies in this terminal.`
 
 // leaveText tells an agent it was removed from the room. Its arguments are
 // the human and the chat pane.
@@ -23,7 +24,7 @@ const leaveText = `%s removed you from the group chat in the shepr chat pane (%s
 
 // welcomeFor addresses the agent by pane so it can choose its own name.
 func welcomeFor(agentPane, chatPane string, history []message) string {
-	text := fmt.Sprintf(welcomeText, human, chatPane, agentPane, human)
+	text := fmt.Sprintf(welcomeText, human, chatPane, agentPane, chatPane, human)
 	if len(history) == 0 {
 		return text
 	}
