@@ -266,9 +266,10 @@ func (m model) submit() (model, tea.Cmd) {
 	}
 	m.recall, m.draft = len(m.sent), ""
 	if !strings.HasPrefix(text, "/") || strings.HasPrefix(text, "//") {
-		m.input.Reset()
 		if err := m.c.receive(message{author: human, text: strings.TrimPrefix(text, "/")}); err != nil {
 			m.c.note(err.Error())
+		} else {
+			m.input.Reset()
 		}
 		return m, nil
 	}
@@ -432,11 +433,11 @@ func (c *chat) nameStyle(author, pane string) lipgloss.Style {
 func (c *chat) highlight(text string) string {
 	styles := map[string]lipgloss.Style{}
 	for _, a := range c.members() {
-		styles[a.Handle()] = c.nameStyle(a.Handle(), a.PaneID)
+		styles[strings.ToLower(a.Handle())] = c.nameStyle(a.Handle(), a.PaneID)
 	}
 	return mentionRe.ReplaceAllStringFunc(text, func(m string) string {
 		lead, name, _ := strings.Cut(m, "@")
-		style, in := styles[name]
+		style, in := styles[strings.ToLower(name)]
 		if !in {
 			return m
 		}

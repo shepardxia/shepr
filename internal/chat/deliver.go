@@ -3,6 +3,7 @@ package chat
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -33,7 +34,19 @@ func (c *chat) receive(msg message) error {
 	if msg.audience != localAudience {
 		for _, match := range mentionRe.FindAllStringSubmatch(msg.text, -1) {
 			msg.audience = directAudience
-			names[match[1]] = true
+			if strings.EqualFold(match[1], human) {
+				continue
+			}
+			found := false
+			for _, a := range c.agents {
+				if a.member && strings.EqualFold(match[1], a.info.Handle()) {
+					names[a.info.Handle()], found = true, true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("no one in the room goes by @%s", match[1])
+			}
 		}
 	}
 	c.record(msg)
@@ -50,7 +63,7 @@ func (c *chat) receive(msg message) error {
 	return nil
 }
 
-var mentionRe = regexp.MustCompile(`(?:^|\s)@([a-z][a-z0-9_-]{0,31})`)
+var mentionRe = regexp.MustCompile(`(?i)(?:^|\s)@([a-z][a-z0-9_-]{0,31})`)
 
 // attempt identifies the one batch in flight for a pane. Resetting membership
 // discards its result but still waits for it before sending the next batch.
@@ -107,12 +120,17 @@ func (c *chat) delivered(msg deliveredMsg) {
 	if d.discard || msg.err == nil {
 		return
 	}
-	switch herdr.Code(msg.err) {
-	case "agent_blocked", "agent_not_ready":
-		// Herdr rejects these before writing any input to the agent.
+	code := herdr.Code(msg.err)
+	var network *net.OpError
+	switch {
+	case code == "agent_blocked", code == "agent_not_ready", errors.As(msg.err, &network) && network.Op == "dial":
+		// No input was written: keep the batch until herdr is reachable and ready.
 		a.pending = append(d.batch, a.pending...)
-		a.waiting = strings.TrimPrefix(herdr.Code(msg.err), "agent_")
-	case "agent_not_found":
+		a.waiting = strings.TrimPrefix(code, "agent_")
+		if a.waiting == "" {
+			a.waiting = "disconnected"
+		}
+	case code == "agent_not_found":
 		c.note("could not send to " + a.info.Handle() + ": " + msg.err.Error())
 	default:
 		// A timeout or failed submission may already have written the prompt.

@@ -2,6 +2,8 @@ package chat
 
 import (
 	"fmt"
+	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -22,6 +24,17 @@ func newRoom() *chat {
 
 func TestPrivateExchange(t *testing.T) {
 	c := newRoom()
+	for _, msg := range []message{
+		{author: human, text: "@missing please review this"},
+		{pane: "w1:p2", text: "@rook @missing mixed recipients"},
+	} {
+		if err := c.receive(msg); err == nil {
+			t.Fatal("accepted a message with an unknown recipient")
+		}
+	}
+	if len(c.transcript) != 0 || len(c.dispatch()) != 0 {
+		t.Fatal("rejected message was recorded or partially delivered")
+	}
 	var targets []string
 	c.prompt = func(pane, _ string) error { targets = append(targets, pane); return nil }
 	for _, msg := range []message{
@@ -54,18 +67,33 @@ func TestPrivateExchange(t *testing.T) {
 	if len(targets) != 5 || targets[4] != "w1:p3" || len(c.recap()) != 3 {
 		t.Fatal("addressing the room did not restore shared replies")
 	}
+	if err := c.receive(message{pane: "w1:p2", text: "@" + human + " this is for you"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.dispatch()) != 0 {
+		t.Fatal("reply addressed to the human prompted the agents")
+	}
 }
 
 func TestDeliveryOrderAndRetry(t *testing.T) {
-	for _, code := range []string{"agent_blocked", "timeout"} {
-		t.Run(code, func(t *testing.T) {
+	_, dialErr := net.Dial("unix", filepath.Join(t.TempDir(), "missing.sock"))
+	for _, tc := range []struct {
+		name  string
+		err   error
+		retry bool
+	}{
+		{"blocked", &herdr.Error{Code: "agent_blocked"}, true},
+		{"disconnected", dialErr, true},
+		{"timeout", &herdr.Error{Code: "timeout"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			c := newRoom()
 			a := c.agents["w1:p2"]
 			var sent []string
 			c.prompt = func(_, text string) error {
 				sent = append(sent, text)
 				if len(sent) == 1 {
-					return &herdr.Error{Code: code}
+					return tc.err
 				}
 				return nil
 			}
@@ -76,7 +104,7 @@ func TestDeliveryOrderAndRetry(t *testing.T) {
 				t.Fatal("overlapping submissions")
 			}
 			c.delivered(first().(deliveredMsg))
-			if code == "agent_blocked" && len(c.dispatch()) != 0 {
+			if tc.retry && len(c.dispatch()) != 0 {
 				t.Fatal("retry before roster poll")
 			}
 			c.syncRoster(c.members())
@@ -84,7 +112,7 @@ func TestDeliveryOrderAndRetry(t *testing.T) {
 				c.delivered(cmd().(deliveredMsg))
 			}
 			want := "two"
-			if code == "agent_blocked" {
+			if tc.retry {
 				want = "one\n\ntwo"
 			}
 			if !slices.Equal(sent, []string{"one", want}) {
@@ -145,5 +173,12 @@ func TestInputAndMessageLayout(t *testing.T) {
 		if view.View().MouseMode != tea.MouseModeNone {
 			t.Fatal("mouse capture prevents native selection")
 		}
+	}
+	view := m.(model)
+	draft := "@missing keep this draft"
+	view.input.SetValue(draft)
+	view, _ = view.submit()
+	if view.input.Value() != draft {
+		t.Fatal("rejected message erased the draft")
 	}
 }
