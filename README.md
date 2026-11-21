@@ -23,7 +23,7 @@ printf '\n[[keys.command]]\nkey = "prefix+m"\ntype = "plugin_action"\ncommand = 
 Press `prefix+m`. A chat pane opens across the bottom of the tab. Type to
 message every agent in the tab.
 
-`@name` to send it only to that agent. 
+`@name` to DM inside a room. 
 Shift+Enter adds a new line; Enter sends. 
 
 - `/add codex` spins up a new codex, claude for claude; `/add some_agent` brings in a live agent from anywhere.
