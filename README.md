@@ -21,16 +21,11 @@ printf '\n[[keys.command]]\nkey = "prefix+m"\ntype = "plugin_action"\ncommand = 
 ## Use
 
 Press `prefix+m`. A chat pane opens across the bottom of the tab. Type to
-message every agent in the tab; their replies show up in the chat.
+message every agent in the tab.
 
-Put `@name` in a message to send it only to that agent. Its reply appears in the
-chat without being forwarded to the others. Tab completes names and commands;
-up and down move through the input, recalling sent messages only at its first
-or last line. Shift+Enter adds a new line; Enter sends. Select text normally in
-herdr; the mouse wheel, Page Up and Page Down scroll the chat.
+`@name` to send it only to that agent. 
+Shift+Enter adds a new line; Enter sends. 
 
-- `/add codex` starts a new codex in this tab; `/add rook` brings in a live agent from anywhere.
-- `/kick rook` takes rook out of the room; it keeps running and `/add rook` brings it back.
+- `/add codex` spins up a new codex, claude for claude; `/add some_agent` brings in a live agent from anywhere.
+- `/kick some_agent` kicks some_agent from the room (keeps running); `/add some_agent` brings it back.
 - `/help` lists commands and keys.
-
-Reopen the chat after updating.
