@@ -3,6 +3,7 @@ package chat
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"slices"
@@ -35,11 +36,22 @@ const (
 // message is the source record for both display and newcomer recaps.
 type message struct {
 	author, pane, text string
+	body               markdownBody
+	images             []attachment
 	at                 time.Time
 	audience           audience
 }
 
-func (m message) String() string { return m.author + ": " + m.text }
+func (m message) String() string {
+	parts := []string{}
+	if m.text != "" {
+		parts = append(parts, m.text)
+	}
+	for _, img := range m.images {
+		parts = append(parts, fmt.Sprintf("Attached image %q (%d×%d). Read the original file at %q.", img.name, img.width, img.height, img.path))
+	}
+	return m.author + ": " + strings.Join(parts, "\n")
+}
 
 const (
 	logSize     = 1000
@@ -49,12 +61,12 @@ const (
 // chat is owned entirely by the Bubble Tea loop. Commands perform I/O using
 // captured arguments and return results; they never read or change this state.
 type chat struct {
-	tab, self  string
-	agents     map[string]*agent
-	colors     map[string]int
-	transcript []message
-	revision   uint64
-	prompt     func(pane, text string) error
+	tab, self, dir string
+	agents         map[string]*agent
+	colors         map[string]int
+	transcript     []message
+	revision       uint64
+	prompt         func(pane, text string) error
 }
 
 func newChat(tab, self string) *chat {
@@ -66,9 +78,15 @@ func Run() error {
 	if c.tab == "" || c.self == "" {
 		return errors.New("shepr chat runs as a herdr plugin pane")
 	}
+	dir, err := newRoomDir()
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	c.dir = dir
 	p := tea.NewProgram(newModel(c))
 	done := make(chan struct{})
-	closePosts, err := listenPosts(p.Send, done)
+	closePosts, err := listenPosts(dir, p.Send, done)
 	if err != nil {
 		return err
 	}

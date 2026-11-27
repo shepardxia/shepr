@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -15,7 +14,7 @@ import (
 // receive accepts a message once, before acknowledging a post or starting I/O.
 func (c *chat) receive(msg message) error {
 	msg.text = plainText(msg.text)
-	if msg.text == "" {
+	if strings.TrimSpace(msg.text) == "" && len(msg.images) == 0 {
 		return errors.New("message is empty")
 	}
 	if msg.pane != "" {
@@ -30,29 +29,32 @@ func (c *chat) receive(msg message) error {
 			msg.audience = localAudience
 		}
 	}
-	names := map[string]bool{}
-	if msg.audience != localAudience {
-		for _, match := range mentionRe.FindAllStringSubmatch(msg.text, -1) {
-			msg.audience = directAudience
-			if strings.EqualFold(match[1], human) {
+	msg.author = strings.Join(strings.Fields(plainText(msg.author)), " ")
+	msg.body = parseBody(msg.text)
+	targets := map[string]bool{}
+	if names := msg.body.mentions(); len(names) > 0 {
+		msg.audience = directAudience
+		byName := map[string]string{}
+		for pane, a := range c.agents {
+			if a.member {
+				byName[strings.ToLower(a.info.Handle())] = pane
+			}
+		}
+		for _, name := range names {
+			if strings.EqualFold(name, human) {
 				continue
 			}
-			found := false
-			for _, a := range c.agents {
-				if a.member && strings.EqualFold(match[1], a.info.Handle()) {
-					names[a.info.Handle()], found = true, true
-					break
-				}
+			pane, ok := byName[strings.ToLower(name)]
+			if !ok {
+				return fmt.Errorf("no one in the room goes by @%s", name)
 			}
-			if !found {
-				return fmt.Errorf("no one in the room goes by @%s", match[1])
-			}
+			targets[pane] = true
 		}
 	}
 	c.record(msg)
 	text := msg.String()
 	for pane, a := range c.agents {
-		if a.member && pane != msg.pane && (msg.audience == roomAudience || names[a.info.Handle()]) {
+		if a.member && pane != msg.pane && (msg.audience == roomAudience || targets[pane]) {
 			// A directed exchange stays local until the human addresses the room.
 			if msg.pane == "" || msg.audience == directAudience {
 				a.localReplies = msg.audience == directAudience
@@ -62,8 +64,6 @@ func (c *chat) receive(msg message) error {
 	}
 	return nil
 }
-
-var mentionRe = regexp.MustCompile(`(?i)(?:^|\s)@([a-z][a-z0-9_-]{0,31})`)
 
 // attempt identifies the one batch in flight for a pane. Resetting membership
 // discards its result but still waits for it before sending the next batch.

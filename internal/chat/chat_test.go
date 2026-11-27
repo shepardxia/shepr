@@ -41,7 +41,7 @@ func TestPrivateExchange(t *testing.T) {
 		{author: human, text: "@rook question"},
 		{pane: "w1:p3", text: "room message"},
 		{pane: "w1:p2", text: "answer"},
-		{pane: "w1:p2", text: "follow-up mentions @pauley"},
+		{pane: "w1:p2", text: "private follow-up about `@pauley`"},
 	} {
 		if err := c.receive(msg); err != nil {
 			t.Fatal(err)
@@ -72,6 +72,37 @@ func TestPrivateExchange(t *testing.T) {
 	}
 	if len(c.dispatch()) != 0 {
 		t.Fatal("reply addressed to the human prompted the agents")
+	}
+}
+
+func TestMultipleMentions(t *testing.T) {
+	c := newRoom()
+	c.agents["third"] = &agent{info: herdr.Agent{Name: "wren", PaneID: "third"}, member: true}
+	text := "(@Rook,@pauley), @rook. Email x@example.com or use `@literal`."
+	if err := c.receive(message{author: human, text: text}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.recap()) != 0 {
+		t.Fatal("direct message in room recap")
+	}
+	for pane, a := range c.agents {
+		if pane == "third" {
+			if len(a.pending) > 0 {
+				t.Fatal("unmentioned member got message")
+			}
+		} else if !slices.Equal(a.pending, []string{human + ": " + text}) {
+			t.Fatalf("wrong delivery: %v", a.pending)
+		}
+		a.pending = nil
+	}
+	if err := c.receive(message{pane: "w1:p2", text: "@wren, @pauley and @rook"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.agents["third"].pending) != 1 || len(c.agents["w1:p3"].pending) != 1 || len(c.agents["w1:p2"].pending) != 0 {
+		t.Fatal("explicit reply did not reach the other named panes")
+	}
+	if err := c.receive(message{author: human, text: "@rook,@typo"}); err == nil || len(c.transcript) != 2 {
+		t.Fatal("partial send for unknown target")
 	}
 }
 

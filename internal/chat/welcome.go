@@ -11,10 +11,13 @@ const welcomeText = `You're in %s's group chat (%s).
 First, pick a name, one lowercase word under 10 letters:
 herdr agent rename %s <name>
 
-Send chat replies with: shepr post <name> "<message>"
+Send chat replies with: shepr post <name> '<message>'
+Attach images with: shepr post <name> --image <path> [message]
+When a message includes an attached image, open its file path to inspect the original.
+Chat renders Markdown and LaTeX math ($…$ inline, $$…$$ on its own line).
 Read recent messages with: herdr pane read %s --lines 80
 
-An @name exchange stays in chat until %s addresses the whole room again.
+Explicit @mentions deliver to each named member. After a directed message your unaddressed replies stay in chat until %s addresses the whole room again.
 
 Post when you have something to add. Keep it short, and don't repeat chat replies in this terminal.`
 

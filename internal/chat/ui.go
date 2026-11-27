@@ -18,17 +18,19 @@ import (
 // command is a slash command typed in the input box.
 type command struct {
 	name, args, help string
-	run              func(c *chat, arg string) tea.Cmd // runs on the UI loop; returns any I/O work
-	complete         func(c *chat) []string            // what arg can be
+	run              func(m *model, arg string) tea.Cmd // runs on the UI loop; returns any I/O work
+	complete         func(c *chat) []string             // what arg can be
 }
 
 var commands []command
 
 func init() {
 	commands = []command{
-		{"add", "<kind|name>", "start an agent of a kind here, or bring in a live one by name", (*chat).add, (*chat).addable},
-		{"kick", "<name>", "take an agent out of the room; it keeps running", (*chat).kick, (*chat).memberNames},
-		{"help", "", "list commands and keys", func(c *chat, _ string) tea.Cmd { c.note(helpText()); return nil }, nil},
+		{"add", "<kind|name>", "start an agent of a kind here, or bring in a live one by name", (*model).add, (*chat).addable},
+		{"kick", "<name>", "take an agent out of the room; it keeps running", func(m *model, arg string) tea.Cmd { return m.c.kick(arg) }, (*chat).memberNames},
+		{"attach", "<path>", "attach an image to your next message", (*model).attach, nil},
+		{"detach", "", "remove the last attached image", (*model).detach, nil},
+		{"help", "", "list commands and keys", func(m *model, _ string) tea.Cmd { m.c.note(helpText()); return nil }, nil},
 	}
 }
 
@@ -38,7 +40,9 @@ func helpText() string {
 		rows = append(rows, [2]string{"/" + strings.TrimSpace(cmd.name+" "+cmd.args), cmd.help})
 	}
 	rows = append(rows,
-		[2]string{"@name", "send only to that agent; its reply stays in the chat"},
+		[2]string{"@one @two", "send to each named member once"},
+		[2]string{"ctrl+v", "paste an image or text from the clipboard"},
+		[2]string{"ctrl+c", "clear text and attachments or quit an empty draft"},
 		[2]string{"tab", "complete a name or command"},
 		[2]string{"up / down", "move through input; recall sent messages at its first / last line"},
 		[2]string{"wheel / pgup / pgdn", "scroll the chat"},
@@ -79,32 +83,6 @@ func (c *chat) addable() []string {
 	return append(names, kinds...)
 }
 
-// render derives a wrapped display block from a transcript record.
-func (c *chat) render(msg message, width int) string {
-	if msg.audience == noteAudience {
-		indent := strings.Repeat(" ", min(2, max(width-1, 0)))
-		lines := strings.Split(lipgloss.Wrap(msg.text, max(width-len(indent), 1), ""), "\n")
-		for i, line := range lines {
-			lines[i] = faint.Render(indent + line)
-		}
-		return strings.Join(lines, "\n")
-	}
-	head := c.nameStyle(msg.author, msg.pane).Render(msg.author) + "  " + faint.Render(msg.at.Format("15:04"))
-	return "\n" + lipgloss.Wrap(head, width, "") + "\n" + lipgloss.Wrap(c.highlight(msg.text), width, "")
-}
-
-// plainText keeps message contents from moving the terminal cursor or
-// changing its styles. Normalize line endings before wrapping to cell width.
-func plainText(text string) string {
-	text = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\t", "    ").Replace(ansi.Strip(text))
-	return strings.TrimSpace(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' {
-			return -1
-		}
-		return r
-	}, text))
-}
-
 type model struct {
 	c        *chat
 	width    int
@@ -115,6 +93,8 @@ type model struct {
 	draft    string   // the unsent text recalling set aside
 	printed  uint64
 	printing bool
+	images   []attachment
+	loading  *pendingPaste
 	pending  string // a command under way, shown until its result arrives
 }
 
@@ -124,9 +104,10 @@ type doneMsg string
 func newModel(c *chat) model {
 	in := textarea.New()
 	in.Prompt = "› "
-	in.Placeholder = "message the room · @name directs · /help"
+	in.Placeholder = "message the room · @name directs · /attach image · /help"
 	in.ShowLineNumbers = false
 	in.DynamicHeight = true
+	in.MaxWidth = 0
 	in.MaxHeight = 8
 	in.MaxContentHeight = 10000
 	in.KeyMap.InsertNewline.SetKeys("shift+enter", "alt+enter", "ctrl+j")
@@ -175,16 +156,7 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		}
 		return m, nil
 	case postMsg:
-		a := m.c.agents[msg.post.Pane]
-		reply := postReply{Member: a != nil && a.member}
-		if msg.post.Text != "" {
-			if !reply.Member {
-				reply.Error = "your agent is not in this room"
-			} else if err := m.c.receive(message{pane: msg.post.Pane, author: msg.post.Name, text: msg.post.Text}); err != nil {
-				reply.Error = err.Error()
-			}
-		}
-		msg.reply <- reply
+		msg.reply <- m.c.acceptPost(msg.message)
 		return m, nil
 	case pollMsg:
 		return m, pollRoster
@@ -205,24 +177,44 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 		m.input.MaxHeight = max(1, min(8, m.height-1))
 		m.input.SetWidth(max(m.width-1, 1))
 		return m, nil
+	case pasteResult:
+		return m.finishPaste(msg)
+	case tea.PasteMsg:
+		if m.loading != nil {
+			m.loading.sendWhenReady = false
+		}
+		var cmd tea.Cmd
+		if path := pastedImagePath(msg.Content); path != "" && !isCommand(m.input.Value()) {
+			cmd = m.loadImage(path)
+		} else {
+			cmd = m.pasteText(msg.Content)
+		}
+		return m, cmd
 	case tea.KeyPressMsg:
+		if m.loading != nil {
+			m.loading.sendWhenReady = false
+		}
 		switch msg.String() {
-		case "ctrl+c":
-			if m.input.Value() == "" {
+		case "ctrl+v":
+			cmd := m.loadImage("")
+			return m, cmd
+		case "ctrl+c", "ctrl+d":
+			if m.input.Value() == "" && len(m.images) == 0 && m.loading == nil {
 				return m, tea.Quit
 			}
-			m.input.Reset()
-			return m, nil
-		case "ctrl+d":
-			if m.input.Value() == "" {
-				return m, tea.Quit
+			if msg.String() == "ctrl+c" {
+				m.input.Reset()
+				m.images, m.loading = nil, nil
+				return m, nil
 			}
 		case "enter":
 			return m.submit()
 		case "tab":
 			if c, ok := m.completion(); ok {
 				if len(c.options) > 0 {
-					m.input.InsertString(c.options[0][len(c.typed):] + " ")
+					option := []rune(c.options[0])
+					suffix := option[len([]rune(c.typed)):]
+					m.input.InsertString(string(suffix) + " ")
 				}
 				return m, nil
 			}
@@ -255,24 +247,39 @@ func (m model) update(msg tea.Msg) (model, tea.Cmd) {
 	return m, cmd
 }
 
+func isCommand(text string) bool {
+	text = strings.TrimSpace(text)
+	return strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "//")
+}
+
 // submit sends the input box as a message, or runs it as a command.
 func (m model) submit() (model, tea.Cmd) {
-	text := strings.TrimSpace(m.input.Value())
-	if text == "" {
+	text := m.input.Value()
+	trimmed := strings.TrimSpace(text)
+	if m.loading != nil {
+		m.loading.sendWhenReady = true
 		return m, nil
 	}
-	if len(m.sent) == 0 || m.sent[len(m.sent)-1] != text {
-		m.sent = append(m.sent, text)
+	if trimmed == "" && len(m.images) == 0 {
+		return m, nil
 	}
-	m.recall, m.draft = len(m.sent), ""
-	if !strings.HasPrefix(text, "/") || strings.HasPrefix(text, "//") {
-		if err := m.c.receive(message{author: human, text: strings.TrimPrefix(text, "/")}); err != nil {
+	if !isCommand(trimmed) {
+		if strings.HasPrefix(trimmed, "//") {
+			text = strings.TrimPrefix(trimmed, "/")
+		}
+		if trimmed == "" {
+			text = ""
+		}
+		if err := m.c.receive(message{author: human, text: text, images: m.images}); err != nil {
 			m.c.note(err.Error())
 		} else {
+			m.remember(text)
+			m.images = nil
 			m.input.Reset()
 		}
 		return m, nil
 	}
+	text = trimmed
 	name, arg, _ := strings.Cut(text[1:], " ")
 	arg = strings.TrimSpace(arg)
 	for _, cmd := range commands {
@@ -283,19 +290,20 @@ func (m model) submit() (model, tea.Cmd) {
 			m.c.note("usage: /" + cmd.name + " " + cmd.args)
 			return m, nil
 		}
-		if name == "add" && m.pending != "" {
-			m.c.note("an agent is already starting")
-			return m, nil
-		}
+		m.remember(text)
 		m.input.Reset()
-		work := cmd.run(m.c, arg)
-		if work != nil {
-			m.pending = "/" + strings.TrimSpace(name+" "+arg) + " …"
-		}
+		work := cmd.run(&m, arg)
 		return m, work
 	}
 	m.c.note("no command /" + name + "; /help lists them")
 	return m, nil
+}
+
+func (m *model) remember(text string) {
+	if text != "" && (len(m.sent) == 0 || m.sent[len(m.sent)-1] != text) {
+		m.sent = append(m.sent, text)
+	}
+	m.recall, m.draft = len(m.sent), ""
 }
 
 func (m model) View() tea.View {
@@ -307,6 +315,18 @@ func (m model) View() tea.View {
 		top = suggestLine(c)
 	} else if m.pending != "" {
 		top = faint.Render(m.pending)
+	}
+	if len(m.images) > 0 || m.loading != nil {
+		var names []string
+		for _, img := range m.images {
+			names = append(names, "▧ "+img.name)
+		}
+		if m.loading != nil && m.loading.sendWhenReady {
+			names = append(names, "sending when ready…")
+		} else if m.loading != nil {
+			names = append(names, "loading image…")
+		}
+		top = strings.Join(names, "  ") + "  " + top
 	}
 	top = ansi.Truncate(top, max(m.width-1, 1), "…")
 	input := lipgloss.NewStyle().MaxWidth(m.width).Render(m.input.View())
@@ -347,10 +367,11 @@ func (m model) completion() (completion, bool) {
 		start--
 	}
 	word := string(line[start:col])
+	if mention := mentionAtCursor.FindStringSubmatch(word); mention != nil {
+		return complete(mention[1], m.c.memberNames(), nil), true
+	}
 	head := strings.Fields(string(line[:start]))
 	switch {
-	case strings.HasPrefix(word, "@"):
-		return complete(word[1:], m.c.memberNames(), nil), true
 	case m.input.Line() == 0 && len(head) == 0 && strings.HasPrefix(word, "/") && !strings.HasPrefix(word, "//"):
 		var names []string
 		blurb := map[string]string{}
@@ -372,7 +393,7 @@ func (m model) completion() (completion, bool) {
 func complete(typed string, all []string, blurb map[string]string) completion {
 	c := completion{typed: typed, blurb: blurb}
 	for _, s := range all {
-		if strings.HasPrefix(s, typed) {
+		if strings.HasPrefix(strings.ToLower(s), strings.ToLower(typed)) {
 			c.options = append(c.options, s)
 		}
 	}
@@ -419,7 +440,6 @@ func (c *chat) assignColor(pane string) {
 }
 
 func (c *chat) nameStyle(author, pane string) lipgloss.Style {
-	bold := lipgloss.NewStyle().Bold(true)
 	if pane == "" && author == human {
 		return bold.Foreground(lipgloss.Color("2"))
 	}
@@ -427,22 +447,6 @@ func (c *chat) nameStyle(author, pane string) lipgloss.Style {
 		return bold.Foreground(lipgloss.Color(palette[color]))
 	}
 	return bold
-}
-
-// highlight paints each @mention of a member in that member's color.
-func (c *chat) highlight(text string) string {
-	styles := map[string]lipgloss.Style{}
-	for _, a := range c.members() {
-		styles[strings.ToLower(a.Handle())] = c.nameStyle(a.Handle(), a.PaneID)
-	}
-	return mentionRe.ReplaceAllStringFunc(text, func(m string) string {
-		lead, name, _ := strings.Cut(m, "@")
-		style, in := styles[strings.ToLower(name)]
-		if !in {
-			return m
-		}
-		return lead + style.Render("@"+name)
-	})
 }
 
 // statusLine lists members, their state, and any refused deliveries.

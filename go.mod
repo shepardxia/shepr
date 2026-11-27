@@ -6,11 +6,15 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
 	charm.land/lipgloss/v2 v2.0.5
+	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/doug/termtex v0.0.0-20260918165034-c407d5cf5251
+	github.com/gohugoio/hugo-goldmark-extensions/passthrough v0.6.0
+	github.com/yuin/goldmark v1.8.6
+	golang.org/x/image v0.36.0
 )
 
 require (
-	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect

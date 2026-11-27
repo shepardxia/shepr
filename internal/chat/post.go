@@ -14,21 +14,32 @@ import (
 	"github.com/shepardxia/shepr/internal/herdr"
 )
 
-// An empty Text queries membership; otherwise the request posts a message.
+// A request without content queries membership and supported post formats.
 type post struct {
-	Pane string `json:"pane"`
-	Name string `json:"name,omitempty"`
-	Text string `json:"text,omitempty"`
+	Pane   string   `json:"pane"`
+	Name   string   `json:"name,omitempty"`
+	Text   string   `json:"text,omitempty"`
+	Images []string `json:"images,omitempty"`
+}
+
+const postTimeout = 5 * time.Second
+
+func (p post) timeout() time.Duration {
+	if len(p.Images) > 0 {
+		return time.Minute
+	}
+	return postTimeout
 }
 
 type postReply struct {
-	Member bool   `json:"member"`
-	Error  string `json:"error,omitempty"`
+	Member         bool   `json:"member"`
+	SupportsImages bool   `json:"supports_images,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type postMsg struct {
-	post  post
-	reply chan postReply
+	message message
+	reply   chan postReply
 }
 
 func roomsDir() (string, error) {
@@ -36,16 +47,45 @@ func roomsDir() (string, error) {
 	return filepath.Join(root, "shepr"), err
 }
 
+func parsePost(args []string) (post, error) {
+	usage := errors.New("usage: shepr post <name> [--image <path>]... [--] [message]")
+	if len(args) < 2 {
+		return post{}, usage
+	}
+	p := post{Name: args[0]}
+	args = args[1:]
+	for len(args) > 0 && args[0] == "--image" {
+		if len(args) < 2 || args[1] == "" {
+			return post{}, usage
+		}
+		path, err := filepath.Abs(args[1])
+		if err != nil {
+			return post{}, err
+		}
+		p.Images = append(p.Images, path)
+		args = args[2:]
+	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	p.Text = strings.Join(args, " ")
+	if strings.TrimSpace(p.Text) == "" && len(p.Images) == 0 {
+		return post{}, usage
+	}
+	return p, nil
+}
+
 // Post finds the caller's room before sending the message to it once.
 func Post(args []string) error {
-	if len(args) < 2 || strings.TrimSpace(strings.Join(args[1:], " ")) == "" {
-		return errors.New("usage: shepr post <name> <message>")
-	}
-	agent, err := herdr.GetAgent(args[0])
+	p, err := parsePost(args)
 	if err != nil {
 		return err
 	}
-	p := post{Pane: agent.PaneID, Name: agent.Handle(), Text: strings.TrimSpace(strings.Join(args[1:], " "))}
+	agent, err := herdr.GetAgent(p.Name)
+	if err != nil {
+		return err
+	}
+	p.Pane, p.Name = agent.PaneID, agent.Handle()
 	root, err := roomsDir()
 	if err != nil {
 		return err
@@ -67,6 +107,9 @@ func Post(args []string) error {
 			if room != "" {
 				return errors.New("your agent is in multiple chats; /kick it from one before posting")
 			}
+			if len(p.Images) > 0 && !reply.SupportsImages {
+				return errors.New("reopen this chat to enable image posts")
+			}
 			room = path
 		}
 	}
@@ -79,12 +122,12 @@ func Post(args []string) error {
 
 func exchangePost(addr string, p post) (postReply, error) {
 	var reply postReply
-	conn, err := net.DialTimeout("unix", addr, 5*time.Second)
+	conn, err := net.DialTimeout("unix", addr, postTimeout)
 	if err != nil {
 		return reply, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(p.timeout()))
 	if err := json.NewEncoder(conn).Encode(p); err != nil {
 		return reply, err
 	}
@@ -97,21 +140,20 @@ func exchangePost(addr string, p post) (postReply, error) {
 	return reply, nil
 }
 
-func listenPosts(send func(tea.Msg), done <-chan struct{}) (func(), error) {
+func newRoomDir() (string, error) {
 	root, err := roomsDir()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return nil, err
+	if err = os.MkdirAll(root, 0700); err != nil {
+		return "", err
 	}
-	dir, err := os.MkdirTemp(root, "chat-")
-	if err != nil {
-		return nil, err
-	}
+	return os.MkdirTemp(root, "chat-")
+}
+
+func listenPosts(dir string, send func(tea.Msg), done <-chan struct{}) (func(), error) {
 	listener, err := net.Listen("unix", filepath.Join(dir, "chat.sock"))
 	if err != nil {
-		os.RemoveAll(dir)
 		return nil, err
 	}
 	go func() {
@@ -120,29 +162,63 @@ func listenPosts(send func(tea.Msg), done <-chan struct{}) (func(), error) {
 			if err != nil {
 				return
 			}
-			go readPost(conn, send, done)
+			go readPost(dir, conn, send, done)
 		}
 	}()
-	return func() { listener.Close(); os.RemoveAll(dir) }, nil
+	return func() { listener.Close() }, nil
 }
 
-func readPost(conn net.Conn, send func(tea.Msg), done <-chan struct{}) {
+func readPost(dir string, conn net.Conn, send func(tea.Msg), done <-chan struct{}) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(postTimeout))
 	var p post
 	var result postReply
+	defer func() { _ = json.NewEncoder(conn).Encode(result) }()
 	if err := json.NewDecoder(conn).Decode(&p); err != nil {
 		result.Error = err.Error()
-	} else {
-		reply := make(chan postReply, 1)
-		send(postMsg{p, reply})
-		select {
-		case result = <-reply:
-		case <-done:
-			return
-		case <-time.After(5 * time.Second):
-			result.Error = "chat did not acknowledge the request"
-		}
+		return
 	}
-	_ = json.NewEncoder(conn).Encode(result)
+	_ = conn.SetDeadline(time.Now().Add(p.timeout()))
+	msg, err := p.message(dir)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
+	reply := make(chan postReply, 1)
+	send(postMsg{message: msg, reply: reply})
+	select {
+	case result = <-reply:
+	case <-done:
+		result.Error = "chat closed before acknowledging the request"
+	case <-time.After(postTimeout):
+		result.Error = "chat did not acknowledge the request"
+	}
+}
+
+// Resolve paths off the UI loop. Publish the entire message only once all
+// attachments are readable.
+func (p post) message(dir string) (message, error) {
+	msg := message{pane: p.Pane, author: p.Name, text: p.Text}
+	for _, path := range p.Images {
+		img, err := fileImage(dir, path)
+		if err != nil {
+			return message{}, err
+		}
+		msg.images = append(msg.images, img)
+	}
+	return msg, nil
+}
+
+func (c *chat) acceptPost(msg message) postReply {
+	a := c.agents[msg.pane]
+	reply := postReply{Member: a != nil && a.member, SupportsImages: true}
+	if msg.text == "" && len(msg.images) == 0 {
+		return reply
+	}
+	if !reply.Member {
+		reply.Error = "your agent is not in this room"
+	} else if err := c.receive(msg); err != nil {
+		reply.Error = err.Error()
+	}
+	return reply
 }
